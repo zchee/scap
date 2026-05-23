@@ -15,6 +15,7 @@ clap = { version = "4", features = ["derive", "wrap_help"] }
 dirs = "6"
 fs2 = "0.4"
 gix-url = "0.36"
+regex = "1.12.3"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -22,4 +23,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+serial_test = "3.4.0"
 tempfile = "3"
