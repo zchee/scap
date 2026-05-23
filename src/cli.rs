@@ -27,7 +27,10 @@ pub struct ListArgs {}
 pub struct RmArgs {}
 
 #[derive(Debug, clap::Args)]
-pub struct RootArgs {}
+pub struct RootArgs {
+    #[arg(long)]
+    pub all: bool,
+}
 
 #[derive(Debug, clap::Args)]
 pub struct CreateArgs {}
