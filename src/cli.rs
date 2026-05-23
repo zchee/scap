@@ -20,8 +20,7 @@ pub enum Cmd {
 #[derive(Debug, clap::Args)]
 pub struct GetArgs {}
 
-#[derive(Debug, clap::Args)]
-pub struct ListArgs {}
+pub use crate::cmd::list::ListArgs;
 
 #[derive(Debug, clap::Args)]
 pub struct RmArgs {
