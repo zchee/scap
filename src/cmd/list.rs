@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
 use clap::Args;
+use jwalk::{DirEntry, WalkDirGeneric};
 
 use crate::config;
 
@@ -85,7 +84,7 @@ pub fn run(args: &ListArgs) -> anyhow::Result<()> {
 
     let mut repos = Vec::new();
     for root in &roots {
-        walk_for_repos(root, root, &mut repos, primary.as_deref())?;
+        walk_for_repos(root, &mut repos, primary.as_deref())?;
     }
 
     let repos = filter_repos(repos, args);
@@ -111,65 +110,88 @@ pub fn run(args: &ListArgs) -> anyhow::Result<()> {
 
 fn walk_for_repos(
     root: &Path,
-    cursor: &Path,
     out: &mut Vec<DiscoveredRepo>,
     primary: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let entries = match fs::read_dir(cursor) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Ok(()),
-        Err(e) => {
-            return Err(anyhow::Error::from(e).context(format!("read_dir {}", cursor.display())));
-        }
-    };
-    for entry in entries {
-        let entry = entry.with_context(|| format!("entry under {}", cursor.display()))?;
-        let path = entry.path();
-        let ft = match entry.file_type() {
-            Ok(ft) => ft,
-            Err(_) => continue,
-        };
-        let real_path = if ft.is_symlink() {
-            match fs::canonicalize(&path) {
-                Ok(p) => p,
-                Err(_) => continue,
-            }
-        } else {
-            path.clone()
-        };
-        let meta = match fs::metadata(&real_path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if !meta.is_dir() {
-            continue;
-        }
-        if is_git_repo(&real_path) {
-            if let Some(rel_parts) = rel_parts(root, &real_path) {
-                let is_under_primary = primary.map(|p| real_path.starts_with(p)).unwrap_or(false);
-                out.push(DiscoveredRepo {
-                    full_path: real_path,
-                    rel_parts,
-                    is_under_primary,
-                });
-            }
-            continue;
-        }
-        walk_for_repos(root, &path, out, primary)?;
+    if is_repo_path(root) {
+        out.push(DiscoveredRepo {
+            full_path: root.to_path_buf(),
+            rel_parts: vec![".".to_owned()],
+            is_under_primary: primary.map(|p| root.starts_with(p)).unwrap_or(false),
+        });
+        return Ok(());
     }
+
+    let walker = WalkDirGeneric::<((), bool)>::new(root)
+        .follow_links(true)
+        .skip_hidden(false)
+        .sort(false)
+        .process_read_dir(|_, _, _, children| {
+            for child in children.iter_mut() {
+                let child = match child {
+                    Ok(child) => child,
+                    Err(_) => continue,
+                };
+
+                if is_repo_dir_entry(child) {
+                    child.read_children_path = None;
+                    child.client_state = true;
+                }
+            }
+        });
+
+    for entry in walker {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+
+        if !entry.file_type().is_dir() || !entry.client_state {
+            continue;
+        }
+
+        let repo_root = normalize_repo_root(entry.path());
+        if let Some(rel_parts) = rel_parts(root, &repo_root) {
+            let is_under_primary = primary.map(|p| repo_root.starts_with(p)).unwrap_or(false);
+            out.push(DiscoveredRepo {
+                full_path: repo_root,
+                rel_parts,
+                is_under_primary,
+            });
+        }
+    }
+
     Ok(())
 }
 
-fn is_git_repo(dir: &Path) -> bool {
-    if dir
+fn is_repo_dir_entry(entry: &DirEntry<((), bool)>) -> bool {
+    if !entry.file_type().is_dir() {
+        return false;
+    }
+
+    is_repo_path(&entry.path())
+}
+
+fn is_repo_path(path: &Path) -> bool {
+    if path
         .file_name()
         .and_then(|n| n.to_str())
-        .is_some_and(|n| n.ends_with(".git"))
+        .is_some_and(|name| name.ends_with(".git"))
     {
         return true;
     }
-    dir.join(".git").is_dir()
+
+    path.join(".git").exists()
+}
+
+fn normalize_repo_root(path: PathBuf) -> PathBuf {
+    if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+        return path
+            .parent()
+            .map_or_else(|| path.clone(), |p| p.to_path_buf());
+    }
+
+    path
 }
 
 fn rel_parts(root: &Path, full: &Path) -> Option<Vec<String>> {
@@ -186,6 +208,7 @@ fn filter_repos(repos: Vec<DiscoveredRepo>, args: &ListArgs) -> Vec<DiscoveredRe
     let Some(query) = args.query.as_deref() else {
         return repos;
     };
+
     if args.exact {
         repos
             .into_iter()
@@ -203,6 +226,7 @@ fn filter_repos(repos: Vec<DiscoveredRepo>, args: &ListArgs) -> Vec<DiscoveredRe
                 {
                     return false;
                 }
+
                 let hay = r.non_host_path();
                 if smart_case {
                     hay.to_lowercase().contains(&lower)

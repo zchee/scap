@@ -9,6 +9,7 @@ repository = "https://github.com/zchee/scap"
 readme = "README.md"
 
 [dependencies]
+jwalk = "0.8.1"
 anyhow = "1"
 bstr = "1"
 clap = { version = "4", features = ["derive", "wrap_help"] }
