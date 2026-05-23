@@ -24,7 +24,18 @@ pub struct GetArgs {}
 pub struct ListArgs {}
 
 #[derive(Debug, clap::Args)]
-pub struct RmArgs {}
+pub struct RmArgs {
+    /// Do not actually remove; print what would be removed.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Remove a bare repository (target dest ends in .git).
+    #[arg(long)]
+    pub bare: bool,
+
+    /// Repository spec: <project>, <user>/<project>, <host>/<user>/<project>, or full URL.
+    pub target: String,
+}
 
 #[derive(Debug, clap::Args)]
 pub struct RootArgs {

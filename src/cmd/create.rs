@@ -23,7 +23,7 @@ pub fn run(args: &CreateArgs) -> anyhow::Result<()> {
     let root = config::root_for_url(&repo.https_url).context("resolve root")?;
     let dest = scap_path::dest_path(&root, &repo, args.bare);
 
-    if !is_not_exist_or_empty(&dest)? {
+    if !super::is_not_exist_or_empty(&dest)? {
         // ghq cmd_create.go:42
         bail!(
             "directory \"{}\" already exists and not empty",
@@ -48,18 +48,6 @@ fn validate_vcs(vcs: Option<&str>) -> anyhow::Result<()> {
         "unsupported VCS: \"{}\" (v1 supports git only; see issue tracker for non-git)",
         v
     );
-}
-
-fn is_not_exist_or_empty(path: &Path) -> anyhow::Result<bool> {
-    match fs::read_dir(path) {
-        Ok(mut entries) => Ok(entries.next().is_none()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => Err(anyhow::anyhow!(
-            "{} exists but is not a directory",
-            path.display()
-        )),
-        Err(e) => Err(e).with_context(|| format!("inspect {}", path.display())),
-    }
 }
 
 // ghq cmdutil/run.go RunInDir: the child's stdout is routed to our stderr,
