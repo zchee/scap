@@ -33,7 +33,20 @@ pub struct RootArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub struct CreateArgs {}
+pub struct CreateArgs {
+    /// VCS backend. v1 accepts `git`/`github`/`codecommit` only;
+    /// other values (svn, hg, darcs, fossil, bzr) are rejected
+    /// (intentional divergence from ghq, see ADR-2).
+    #[arg(long, value_name = "vcs")]
+    pub vcs: Option<String>,
+
+    /// Create a bare repository.
+    #[arg(long)]
+    pub bare: bool,
+
+    /// Repository spec: <project>, <user>/<project>, <host>/<user>/<project>, or full URL.
+    pub target: String,
+}
 
 pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
     match cli.cmd {
