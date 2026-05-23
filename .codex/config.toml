@@ -1,5 +1,2 @@
 [mcp_servers.rust-analyzer]
 enabled = true
-
-[mcp_servers.lldb]
-enabled = true
