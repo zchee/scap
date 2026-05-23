@@ -52,8 +52,9 @@ pub fn resolve_roots(all: bool) -> Result<Vec<PathBuf>, ConfigError> {
     let mut deduped = Vec::with_capacity(roots.len());
     for root in roots {
         let cleaned = clean_path(&root);
-        if seen.insert(cleaned.clone()) {
-            deduped.push(cleaned);
+        let resolved = std::fs::canonicalize(&cleaned).unwrap_or(cleaned);
+        if seen.insert(resolved.clone()) {
+            deduped.push(resolved);
         }
     }
 
