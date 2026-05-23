@@ -7,8 +7,10 @@ pub mod path;
 pub mod url;
 pub mod vcs;
 
+pub use url::{Repo, UrlError, from_input as parse_repo_input};
+
 use clap::Parser;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 pub fn run() -> anyhow::Result<()> {
     let filter = EnvFilter::try_from_env("SCAP_LOG")

@@ -1,8 +1,8 @@
 [package]
 name = "scap"
 version = "0.0.0"
-edition = "2021"
-rust-version = "1.83"
+edition = "2024"
+rust-version = "1.85"
 license = "Apache-2.0"
 description = "A remote repository management CLI in Rust, a port of x-motemen/ghq."
 repository = "https://github.com/zchee/scap"
@@ -10,6 +10,7 @@ readme = "README.md"
 
 [dependencies]
 anyhow = "1"
+bstr = "1"
 clap = { version = "4", features = ["derive", "wrap_help"] }
 dirs = "6"
 fs2 = "0.4"
