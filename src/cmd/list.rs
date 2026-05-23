@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use clap::Args;
-use jwalk::{DirEntry, WalkDirGeneric};
+use jwalk::{DirEntry, Parallelism, WalkDirGeneric};
 
 use crate::config;
 
@@ -37,13 +38,14 @@ pub struct ListArgs {
 
 struct DiscoveredRepo {
     full_path: PathBuf,
+    rel_path: String,
     rel_parts: Vec<String>,
     is_under_primary: bool,
 }
 
 impl DiscoveredRepo {
     fn rel_path(&self) -> String {
-        self.rel_parts.join("/")
+        self.rel_path.clone()
     }
 
     // ghq local_repository.go:NonHostPath — path without the leading host segment.
@@ -101,9 +103,11 @@ pub fn run(args: &ListArgs) -> anyhow::Result<()> {
     };
 
     let mut sorted = lines;
-    sorted.sort();
+    sorted.sort_unstable();
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
     for line in sorted {
-        println!("{}", line);
+        writeln!(out, "{line}")?;
     }
     Ok(())
 }
@@ -113,17 +117,24 @@ fn walk_for_repos(
     out: &mut Vec<DiscoveredRepo>,
     primary: Option<&Path>,
 ) -> anyhow::Result<()> {
+    let mut seen = HashSet::new();
+    walk_for_repos_with_seen(root, out, primary, &mut seen)
+}
+
+fn walk_for_repos_with_seen(
+    root: &Path,
+    out: &mut Vec<DiscoveredRepo>,
+    primary: Option<&Path>,
+    seen: &mut HashSet<PathBuf>,
+) -> anyhow::Result<()> {
     if is_repo_path(root) {
-        out.push(DiscoveredRepo {
-            full_path: root.to_path_buf(),
-            rel_parts: vec![".".to_owned()],
-            is_under_primary: primary.map(|p| root.starts_with(p)).unwrap_or(false),
-        });
+        maybe_push_repo(root.to_path_buf(), root, out, primary, seen);
         return Ok(());
     }
 
     let walker = WalkDirGeneric::<((), bool)>::new(root)
         .follow_links(true)
+        .parallelism(Parallelism::RayonNewPool(4))
         .skip_hidden(false)
         .sort(false)
         .process_read_dir(|_, _, _, children| {
@@ -151,17 +162,33 @@ fn walk_for_repos(
         }
 
         let repo_root = normalize_repo_root(entry.path());
-        if let Some(rel_parts) = rel_parts(root, &repo_root) {
-            let is_under_primary = primary.map(|p| repo_root.starts_with(p)).unwrap_or(false);
-            out.push(DiscoveredRepo {
-                full_path: repo_root,
-                rel_parts,
-                is_under_primary,
-            });
-        }
+        maybe_push_repo(repo_root, root, out, primary, seen);
     }
 
     Ok(())
+}
+
+fn maybe_push_repo(
+    full_path: PathBuf,
+    root: &Path,
+    out: &mut Vec<DiscoveredRepo>,
+    primary: Option<&Path>,
+    seen: &mut HashSet<PathBuf>,
+) {
+    if !seen.insert(full_path.clone()) {
+        return;
+    }
+
+    if let Some(rel_parts) = rel_parts(root, &full_path) {
+        let is_under_primary = primary.map(|p| full_path.starts_with(p)).unwrap_or(false);
+        let rel_path = rel_parts.join("/");
+        out.push(DiscoveredRepo {
+            full_path,
+            rel_path,
+            rel_parts,
+            is_under_primary,
+        });
+    }
 }
 
 fn is_repo_dir_entry(entry: &DirEntry<((), bool)>) -> bool {
@@ -201,7 +228,11 @@ fn rel_parts(root: &Path, full: &Path) -> Option<Vec<String>> {
         .filter_map(|c| c.as_os_str().to_str().map(|s| s.to_owned()))
         .filter(|s| !s.is_empty())
         .collect();
-    if parts.is_empty() { None } else { Some(parts) }
+    if parts.is_empty() {
+        Some(vec![".".to_owned()])
+    } else {
+        Some(parts)
+    }
 }
 
 fn filter_repos(repos: Vec<DiscoveredRepo>, args: &ListArgs) -> Vec<DiscoveredRepo> {
