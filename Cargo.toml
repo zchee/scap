@@ -2,7 +2,7 @@
 name = "scap"
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 license = "Apache-2.0"
 description = "A remote repository management CLI in Rust, a port of x-motemen/ghq."
 repository = "https://github.com/zchee/scap"
