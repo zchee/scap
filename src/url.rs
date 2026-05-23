@@ -55,10 +55,11 @@ pub fn from_input(
             reason: e.to_string(),
         })?;
 
-    let host = parsed
-        .host()
-        .ok_or_else(|| UrlError::MissingHost(original_input.clone()))?
-        .to_ascii_lowercase();
+    let host = match parsed.host() {
+        Some(h) => h.to_ascii_lowercase(),
+        None if matches!(parsed.scheme, gix_url::Scheme::File) => String::new(),
+        None => return Err(UrlError::MissingHost(original_input.clone())),
+    };
 
     let raw_path = parsed.path.to_str_lossy();
     let trimmed = trim_repo_path(&raw_path);
