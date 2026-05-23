@@ -19,6 +19,7 @@ pub fn run() -> anyhow::Result<()> {
     fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_span_events(fmt::format::FmtSpan::CLOSE)
         .init();
 
     let cli = cli::Cli::parse();
