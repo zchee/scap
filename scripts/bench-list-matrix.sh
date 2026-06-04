@@ -133,10 +133,10 @@ JSON
   mv "$log" "$RUN_DIR/$label.hyperfine.log"
 }
 
-run_case real_ghq_sort "GHQ_ROOT=$ROOT_REAL_CSV_Q $GHQ_BIN_Q list | LC_ALL=C sort" "$RUN_DIR/real/ghq-sort.json"
-run_case real_ghq_devnull "GHQ_ROOT=$ROOT_REAL_CSV_Q $GHQ_BIN_Q list > /dev/null" "$RUN_DIR/real/ghq-devnull.json"
-run_case real_scap_sort "GHQ_ROOT=$ROOT_REAL_CSV_Q $SCAP_BIN_Q list | LC_ALL=C sort" "$RUN_DIR/real/scap-sort.json"
-run_case real_scap_devnull "GHQ_ROOT=$ROOT_REAL_CSV_Q $SCAP_BIN_Q list > /dev/null" "$RUN_DIR/real/scap-devnull.json"
+run_case real_ghq_sort "SCAP_ROOT=$ROOT_REAL_CSV_Q $GHQ_BIN_Q list | LC_ALL=C sort" "$RUN_DIR/real/ghq-sort.json"
+run_case real_ghq_devnull "SCAP_ROOT=$ROOT_REAL_CSV_Q $GHQ_BIN_Q list > /dev/null" "$RUN_DIR/real/ghq-devnull.json"
+run_case real_scap_sort "SCAP_ROOT=$ROOT_REAL_CSV_Q $SCAP_BIN_Q list | LC_ALL=C sort" "$RUN_DIR/real/scap-sort.json"
+run_case real_scap_devnull "SCAP_ROOT=$ROOT_REAL_CSV_Q $SCAP_BIN_Q list > /dev/null" "$RUN_DIR/real/scap-devnull.json"
 run_case real_fd_raw_sort "$FD_BIN_Q --hidden --no-ignore --type d --glob '*.git' $ROOT_REAL_ARGS_Q | sed 's#/\\.git$##' | LC_ALL=C sort" "$RUN_DIR/real/fd-raw-sort.json"
 run_case real_find_raw_sort "($FIND_BIN_Q $ROOT_REAL_ARGS_Q -type d -name .git -print 2>/dev/null || true) | sed 's#/\\.git$##' | LC_ALL=C sort" "$RUN_DIR/real/find-raw-sort.json"
 run_case real_fd_raw_devnull "$FD_BIN_Q --hidden --no-ignore --type d --glob '*.git' $ROOT_REAL_ARGS_Q > /dev/null" "$RUN_DIR/real/fd-raw-devnull.json"
@@ -166,8 +166,8 @@ ln -s "$SYNTH_ROOT/symlink-target" "$SYNTH_ROOT/symlink-alias"
 
 SYNTH_ROOT_Q="$(shell_dq "$SYNTH_ROOT")"
 
-run_case synthetic_ghq_sort "GHQ_ROOT=$SYNTH_ROOT_Q $GHQ_BIN_Q list | LC_ALL=C sort" "$RUN_DIR/synthetic/ghq-sort.json"
-run_case synthetic_scap_sort "GHQ_ROOT=$SYNTH_ROOT_Q $SCAP_BIN_Q list | LC_ALL=C sort" "$RUN_DIR/synthetic/scap-sort.json"
+run_case synthetic_ghq_sort "SCAP_ROOT=$SYNTH_ROOT_Q $GHQ_BIN_Q list | LC_ALL=C sort" "$RUN_DIR/synthetic/ghq-sort.json"
+run_case synthetic_scap_sort "SCAP_ROOT=$SYNTH_ROOT_Q $SCAP_BIN_Q list | LC_ALL=C sort" "$RUN_DIR/synthetic/scap-sort.json"
 run_case synthetic_fd_raw_sort "$FD_BIN_Q --hidden --no-ignore --type d --glob '*.git' $SYNTH_ROOT_Q | sed 's#/\\.git$##' | LC_ALL=C sort" "$RUN_DIR/synthetic/fd-raw-sort.json"
 run_case synthetic_find_raw_sort "($FIND_BIN_Q $SYNTH_ROOT_Q -type d -name .git -print 2>/dev/null || true) | sed 's#/\\.git$##' | LC_ALL=C sort" "$RUN_DIR/synthetic/find-raw-sort.json"
 
@@ -180,7 +180,7 @@ cat > "$RUN_DIR/matrix-summary.md" <<MD
 - Command runner: hyperfine --warmup 5 --runs 20
 
 ## Notes
-- Real-row commands use GHQ_ROOT=$ROOT_REAL_CSV_Q
+- Real-row commands use SCAP_ROOT=$ROOT_REAL_CSV_Q
 - Synthetic corpus contains dense ghq-shaped layout, direct-root repos,
   hidden path, symlinked top-level alias, and .git file-marker structure.
 - Synthetic corpus is removed automatically after execution; raw artifacts

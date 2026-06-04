@@ -13,7 +13,7 @@ fn isolated(cmd: &mut AssertCommand, home: &Path, root: &Path) {
     }
     cmd.env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", &cfg)
-        .env("GHQ_ROOT", root)
+        .env("SCAP_ROOT", root)
         .env("HOME", home);
 }
 

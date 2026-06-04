@@ -105,9 +105,9 @@ fn collect_targets(args: &GetArgs) -> anyhow::Result<Vec<String>> {
 #[tracing::instrument(name = "scap::cmd::get", skip(args), fields(target = %target))]
 fn process_target(args: &Effective, target: &str) -> anyhow::Result<()> {
     tracing::debug!(target, "scap::cmd::get processing target");
-    let ghq_user = config::ghq_user()?;
-    let complete_user = config::ghq_complete_user()?;
-    let repo = url::from_input(target, ghq_user.as_deref(), complete_user)?;
+    let scap_user = config::scap_user()?;
+    let complete_user = config::scap_complete_user()?;
+    let repo = url::from_input(target, scap_user.as_deref(), complete_user)?;
 
     let remote = if repo.host.is_empty() {
         repo.original_input.clone()
@@ -203,9 +203,9 @@ fn tmp_path_for(dest: &Path, pid: u32) -> PathBuf {
 }
 
 fn exec_look(args: &Effective, target: &str) -> anyhow::Result<()> {
-    let ghq_user = config::ghq_user()?;
-    let complete_user = config::ghq_complete_user()?;
-    let repo = url::from_input(target, ghq_user.as_deref(), complete_user)?;
+    let scap_user = config::scap_user()?;
+    let complete_user = config::scap_complete_user()?;
+    let repo = url::from_input(target, scap_user.as_deref(), complete_user)?;
     let remote = if repo.host.is_empty() {
         repo.original_input.clone()
     } else if args.ssh {

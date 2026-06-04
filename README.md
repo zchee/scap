@@ -37,7 +37,7 @@ scap reads ghq's gitconfig keys directly:
 | `ghq.user` | Default user for 1-segment input (`scap get myproj`). |
 | `ghq.completeUser` | Whether to auto-complete the user from `ghq.user`. |
 
-Environment: `$GHQ_ROOT` (colon-separated path list) wins over gitconfig.
+Environment: `$SCAP_ROOT` (colon-separated path list) wins over gitconfig.
 
 ## Compatibility with ghq
 

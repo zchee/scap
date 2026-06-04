@@ -29,7 +29,7 @@ pub enum UrlError {
 
 pub fn from_input(
     input: &str,
-    ghq_user: Option<&str>,
+    scap_user: Option<&str>,
     complete_user: bool,
 ) -> Result<Repo, UrlError> {
     if input.is_empty() {
@@ -46,7 +46,7 @@ pub fn from_input(
 
     let normalized = normalize_to_parseable(input)?;
     if matches!(normalized.kind, NormalizedKind::Bare) {
-        return from_bare(&original_input, &normalized.value, ghq_user, complete_user);
+        return from_bare(&original_input, &normalized.value, scap_user, complete_user);
     }
 
     let parsed =
@@ -230,7 +230,7 @@ fn looks_like_authority(s: &str) -> bool {
 fn from_bare(
     original: &str,
     value: &str,
-    ghq_user: Option<&str>,
+    scap_user: Option<&str>,
     complete_user: bool,
 ) -> Result<Repo, UrlError> {
     let trimmed = value.trim_matches('/');
@@ -241,7 +241,7 @@ fn from_bare(
         1 => {
             let project = segments[0];
             let (owner, name) = if complete_user {
-                let user = ghq_user.ok_or_else(|| UrlError::UnknownUser {
+                let user = scap_user.ok_or_else(|| UrlError::UnknownUser {
                     input: original.to_owned(),
                 })?;
                 (user.to_owned(), project.to_owned())
@@ -329,7 +329,7 @@ mod tests {
 
     struct Case {
         input: &'static str,
-        ghq_user: Option<&'static str>,
+        scap_user: Option<&'static str>,
         complete_user: bool,
         want_host: &'static str,
         want_owner: &'static str,
@@ -338,7 +338,7 @@ mod tests {
 
     fn run_cases(cases: &[(&'static str, Case)]) {
         for (name, c) in cases {
-            let got = from_input(c.input, c.ghq_user, c.complete_user)
+            let got = from_input(c.input, c.scap_user, c.complete_user)
                 .unwrap_or_else(|e| panic!("{name}: unexpected error: {e}"));
             assert_eq!(got.host, c.want_host, "{name}: host");
             assert_eq!(got.owner, c.want_owner, "{name}: owner");
@@ -353,7 +353,7 @@ mod tests {
                 "github_https",
                 Case {
                     input: "https://github.com/motemen/ghq",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -364,7 +364,7 @@ mod tests {
                 "github_https_dot_git",
                 Case {
                     input: "https://github.com/motemen/ghq.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -375,7 +375,7 @@ mod tests {
                 "github_https_trailing_slash",
                 Case {
                     input: "https://github.com/motemen/ghq/",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -386,7 +386,7 @@ mod tests {
                 "github_http_plain",
                 Case {
                     input: "http://github.com/motemen/ghq",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -397,7 +397,7 @@ mod tests {
                 "github_ssh_explicit",
                 Case {
                     input: "ssh://git@github.com/motemen/ghq.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -408,7 +408,7 @@ mod tests {
                 "github_ssh_no_user",
                 Case {
                     input: "ssh://github.com/motemen/ghq.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -419,7 +419,7 @@ mod tests {
                 "github_git_protocol",
                 Case {
                     input: "git://github.com/motemen/ghq.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -430,7 +430,7 @@ mod tests {
                 "github_scp",
                 Case {
                     input: "git@github.com:motemen/pusheen-explorer.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -441,7 +441,7 @@ mod tests {
                 "github_scp_root_slash",
                 Case {
                     input: "git@github.com:/motemen/pusheen-explorer.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -452,7 +452,7 @@ mod tests {
                 "github_scp_no_user",
                 Case {
                     input: "github.com:motemen/pusheen-explorer.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -463,7 +463,7 @@ mod tests {
                 "github_https_with_user_in_url",
                 Case {
                     input: "https://octocat@github.com/octo/repo",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "octo",
@@ -474,7 +474,7 @@ mod tests {
                 "github_ssh_explicit_no_dot_git",
                 Case {
                     input: "ssh://git@github.com/motemen/ghq",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -485,7 +485,7 @@ mod tests {
                 "github_scp_dash_name",
                 Case {
                     input: "git@github.com:zchee/scap-cli.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "zchee",
@@ -496,7 +496,7 @@ mod tests {
                 "github_https_underscore_name",
                 Case {
                     input: "https://github.com/zchee/foo_bar.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "zchee",
@@ -507,7 +507,7 @@ mod tests {
                 "github_ssh_plus_git",
                 Case {
                     input: "ssh+git://git@github.com/motemen/ghq.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -518,7 +518,7 @@ mod tests {
                 "github_git_plus_ssh",
                 Case {
                     input: "git+ssh://git@github.com/motemen/ghq.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -536,7 +536,7 @@ mod tests {
                 "two_segment_default_github",
                 Case {
                     input: "motemen/ghq",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -547,7 +547,7 @@ mod tests {
                 "one_segment_complete_false_repeats_name",
                 Case {
                     input: "peco",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "peco",
@@ -558,7 +558,7 @@ mod tests {
                 "one_segment_complete_true_uses_ghq_user",
                 Case {
                     input: "same-name-ghq",
-                    ghq_user: Some("ghq-test"),
+                    scap_user: Some("ghq-test"),
                     complete_user: true,
                     want_host: "github.com",
                     want_owner: "ghq-test",
@@ -569,7 +569,7 @@ mod tests {
                 "host_bare_three_segments",
                 Case {
                     input: "github.com/motemen/gore",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "motemen",
@@ -580,7 +580,7 @@ mod tests {
                 "host_bare_golang_x",
                 Case {
                     input: "golang.org/x/crypto",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "golang.org",
                     want_owner: "x",
@@ -598,7 +598,7 @@ mod tests {
                 "ghe_https",
                 Case {
                     input: "https://ghe.example.com/team/proj",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "ghe.example.com",
                     want_owner: "team",
@@ -609,7 +609,7 @@ mod tests {
                 "ghe_https_with_user",
                 Case {
                     input: "https://motemen@ghe.example.com/motemen/pusheen-explorer",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "ghe.example.com",
                     want_owner: "motemen",
@@ -620,7 +620,7 @@ mod tests {
                 "bitbucket_https",
                 Case {
                     input: "https://bitbucket.org/zchee/scap",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "bitbucket.org",
                     want_owner: "zchee",
@@ -631,7 +631,7 @@ mod tests {
                 "bitbucket_with_port",
                 Case {
                     input: "https://bitbucket.local:8888/motemen/ghq.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "bitbucket.local",
                     want_owner: "motemen",
@@ -642,7 +642,7 @@ mod tests {
                 "gitlab_https",
                 Case {
                     input: "https://gitlab.com/group/subgroup/proj",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "gitlab.com",
                     want_owner: "group/subgroup",
@@ -653,7 +653,7 @@ mod tests {
                 "gitlab_ssh",
                 Case {
                     input: "git@gitlab.com:group/subgroup/proj.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "gitlab.com",
                     want_owner: "group/subgroup",
@@ -664,7 +664,7 @@ mod tests {
                 "stash_ssh",
                 Case {
                     input: "ssh://git@stash.com/scm/motemen/ghq.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "stash.com",
                     want_owner: "scm/motemen",
@@ -675,7 +675,7 @@ mod tests {
                 "assembla_git",
                 Case {
                     input: "https://git.assembla.com/zchee/ghq.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "git.assembla.com",
                     want_owner: "zchee",
@@ -693,7 +693,7 @@ mod tests {
                 "uppercase_host_https",
                 Case {
                     input: "https://GitHub.com/Foo/bar",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "Foo",
@@ -704,7 +704,7 @@ mod tests {
                 "mixed_case_ssh",
                 Case {
                     input: "ssh://git@GHE.Example.COM/team/proj",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "ghe.example.com",
                     want_owner: "team",
@@ -715,7 +715,7 @@ mod tests {
                 "uppercase_scp",
                 Case {
                     input: "git@GitHub.com:Foo/Bar.git",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "github.com",
                     want_owner: "Foo",
@@ -733,7 +733,7 @@ mod tests {
                 "svn_sourceforge",
                 Case {
                     input: "http://svn.code.sf.net/p/ghq/code/trunk",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "svn.code.sf.net",
                     want_owner: "p/ghq/code",
@@ -744,7 +744,7 @@ mod tests {
                 "git_sourceforge",
                 Case {
                     input: "http://git.code.sf.net/p/ghq/code",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "git.code.sf.net",
                     want_owner: "p/ghq",
@@ -755,7 +755,7 @@ mod tests {
                 "svn_assembla",
                 Case {
                     input: "https://subversion.assembla.com/svn/ghq/",
-                    ghq_user: None,
+                    scap_user: None,
                     complete_user: false,
                     want_host: "subversion.assembla.com",
                     want_owner: "svn",
@@ -840,7 +840,7 @@ mod tests {
     }
 
     #[test]
-    fn returns_unknown_user_when_complete_user_lacks_ghq_user() {
+    fn returns_unknown_user_when_complete_user_lacks_scap_user() {
         let err = from_input("peco", None, true).unwrap_err();
         match err {
             UrlError::UnknownUser { input } => assert_eq!(input, "peco"),

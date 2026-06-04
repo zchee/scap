@@ -144,7 +144,7 @@ fn benchmark_matrix_script_generates_matrix_artifacts_in_dry_run() {
     let real_ghq_cmd = fs::read_to_string(output_root.join(".commands/real_ghq_sort.sh")).unwrap();
     assert!(
         real_ghq_cmd.contains(&format!(
-            "GHQ_ROOT=\"{}:{}\"",
+            "SCAP_ROOT=\"{}:{}\"",
             real_a.path().display(),
             real_b.path().display()
         )),
@@ -174,14 +174,14 @@ fn benchmark_matrix_script_generates_matrix_artifacts_in_dry_run() {
 
     assert!(
         summary.contains(&format!(
-            "Real-row commands use GHQ_ROOT={}",
+            "Real-row commands use SCAP_ROOT={}",
             real_a.path().display(),
         )) && summary.contains(&format!(":{}", real_b.path().display()))
             || summary.contains(&format!(
-                "Real-row commands use GHQ_ROOT=\"{}:{}\"",
+                "Real-row commands use SCAP_ROOT=\"{}:{}\"",
                 real_a.path().display(),
                 real_b.path().display()
             )),
-        "matrix summary should include expanded GHQ_ROOT for real roots"
+        "matrix summary should include expanded SCAP_ROOT for real roots"
     );
 }

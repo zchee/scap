@@ -12,7 +12,7 @@ fn isolated_env(cmd: &mut Command, home: &Path, root: &Path) {
     }
     cmd.env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", &cfg)
-        .env("GHQ_ROOT", root)
+        .env("SCAP_ROOT", root)
         .env("HOME", home);
 }
 

@@ -18,7 +18,7 @@ fn isolated(cmd: &mut Command, home: &Path, root: &Path) {
     }
     cmd.env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", &cfg)
-        .env("GHQ_ROOT", root)
+        .env("SCAP_ROOT", root)
         .env("HOME", home);
 }
 
@@ -387,18 +387,18 @@ fn list_walks_multiple_roots() {
     let r1_path = r1.path().to_str().unwrap();
     let r2_path = r2.path().to_str().unwrap();
     std::process::Command::new("git")
-        .args(["config", "--file", cfg_path, "--add", "ghq.root", r1_path])
+        .args(["config", "--file", cfg_path, "--add", "scap.root", r1_path])
         .output()
         .unwrap();
     std::process::Command::new("git")
-        .args(["config", "--file", cfg_path, "--add", "ghq.root", r2_path])
+        .args(["config", "--file", cfg_path, "--add", "scap.root", r2_path])
         .output()
         .unwrap();
 
     let mut cmd = Command::cargo_bin("scap").unwrap();
     cmd.env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", &cfg)
-        .env_remove("GHQ_ROOT")
+        .env_remove("SCAP_ROOT")
         .env("HOME", home.path());
     cmd.arg("list")
         .assert()

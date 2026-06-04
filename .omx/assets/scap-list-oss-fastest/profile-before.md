@@ -11,7 +11,7 @@ Scope: Task 2 (`debugger:profiling`) from `.omx/plans/2026-05-24-scap-list-oss-f
   - `cargo 1.95.0 (f2d3ce0bd 2026-03-21)`
 - Commit: `14d27fa` was the pre-launch baseline in plan context; working tree in this run is on top of that history.
 - Command root used for baselines:
-  - `GHQ_ROOT="/Users/zchee/src:/Users/zchee/go/src"`
+  - `SCAP_ROOT="/Users/zchee/src:/Users/zchee/go/src"`
 
 ## Profile artifacts collected
 All artifacts are written under
@@ -30,17 +30,17 @@ All artifacts are written under
 ## Commands executed
 ```bash
 # warm/compat output mode
-GHQ_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ./target/release/scap list >/tmp/profile-list-output-1.txt 2>.omx/assets/scap-list-oss-fastest/profile-before-compat-run1.time
-GHQ_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ./target/release/scap list >/tmp/profile-list-output-2.txt 2>.omx/assets/scap-list-oss-fastest/profile-before-compat-run2.time
-GHQ_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ./target/release/scap list >/tmp/profile-list-output-3.txt 2>.omx/assets/scap-list-oss-fastest/profile-before-compat-run3.time
+SCAP_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ./target/release/scap list >/tmp/profile-list-output-1.txt 2>.omx/assets/scap-list-oss-fastest/profile-before-compat-run1.time
+SCAP_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ./target/release/scap list >/tmp/profile-list-output-2.txt 2>.omx/assets/scap-list-oss-fastest/profile-before-compat-run2.time
+SCAP_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ./target/release/scap list >/tmp/profile-list-output-3.txt 2>.omx/assets/scap-list-oss-fastest/profile-before-compat-run3.time
 
 # warm/scan-to-devnull mode
-GHQ_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ./target/release/scap list >/dev/null 2>.omx/assets/scap-list-oss-fastest/profile-before-devnull-run1.time
-GHQ_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ./target/release/scap list >/dev/null 2>.omx/assets/scap-list-oss-fastest/profile-before-devnull-run2.time
-GHQ_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ./target/release/scap list >/dev/null 2>.omx/assets/scap-list-oss-fastest/profile-before-devnull-run3.time
+SCAP_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ./target/release/scap list >/dev/null 2>.omx/assets/scap-list-oss-fastest/profile-before-devnull-run1.time
+SCAP_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ./target/release/scap list >/dev/null 2>.omx/assets/scap-list-oss-fastest/profile-before-devnull-run2.time
+SCAP_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ./target/release/scap list >/dev/null 2>.omx/assets/scap-list-oss-fastest/profile-before-devnull-run3.time
 
 # comparator baseline
-GHQ_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ghq list >/dev/null 2>.omx/assets/scap-list-oss-fastest/profile-before-ghq-devnull-run1.time
+SCAP_ROOT="/Users/zchee/src:/Users/zchee/go/src" /usr/bin/time -l ghq list >/dev/null 2>.omx/assets/scap-list-oss-fastest/profile-before-ghq-devnull-run1.time
 ...
 ```
 

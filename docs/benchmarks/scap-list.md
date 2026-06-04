@@ -21,9 +21,9 @@ Generated: 2026-05-24T04:58:14Z
 
 ```bash
 cargo build --release
-time GHQ_ROOT="$BENCH_ROOT" target/release/scap list --full-path >/tmp/scap.list.out
+time SCAP_ROOT="$BENCH_ROOT" target/release/scap list --full-path >/tmp/scap.list.out
 # and
-GHQ_ROOT="$BENCH_ROOT" ghq list --full-path >/tmp/ghq.list.out
+SCAP_ROOT="$BENCH_ROOT" ghq list --full-path >/tmp/ghq.list.out
 ```
 
 `BENCH_ROOT` was set to the synthetic fixture root generated in

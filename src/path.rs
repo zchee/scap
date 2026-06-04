@@ -51,14 +51,14 @@ mod tests {
 
     #[test]
     fn computes_destination_paths() {
-        let root = Path::new("/tmp/ghqroot");
+        let root = Path::new("/tmp/scaproot");
         let cases: &[(&str, Case)] = &[
             (
                 "github_plain",
                 Case {
                     repo: mk("github.com", "motemen", "ghq"),
                     bare: false,
-                    want: "/tmp/ghqroot/github.com/motemen/ghq",
+                    want: "/tmp/scaproot/github.com/motemen/ghq",
                 },
             ),
             (
@@ -66,7 +66,7 @@ mod tests {
                 Case {
                     repo: mk("github.com", "motemen", "ghq"),
                     bare: false,
-                    want: "/tmp/ghqroot/github.com/motemen/ghq",
+                    want: "/tmp/scaproot/github.com/motemen/ghq",
                 },
             ),
             (
@@ -74,7 +74,7 @@ mod tests {
                 Case {
                     repo: mk("github.com", "motemen", "ghq"),
                     bare: true,
-                    want: "/tmp/ghqroot/github.com/motemen/ghq.git",
+                    want: "/tmp/scaproot/github.com/motemen/ghq.git",
                 },
             ),
             (
@@ -82,7 +82,7 @@ mod tests {
                 Case {
                     repo: mk("stash.com", "scm/motemen", "ghq"),
                     bare: false,
-                    want: "/tmp/ghqroot/stash.com/scm/motemen/ghq",
+                    want: "/tmp/scaproot/stash.com/scm/motemen/ghq",
                 },
             ),
             (
@@ -90,7 +90,7 @@ mod tests {
                 Case {
                     repo: mk("stash.com", "scm/motemen", "ghq"),
                     bare: true,
-                    want: "/tmp/ghqroot/stash.com/scm/motemen/ghq.git",
+                    want: "/tmp/scaproot/stash.com/scm/motemen/ghq.git",
                 },
             ),
             (
@@ -98,7 +98,7 @@ mod tests {
                 Case {
                     repo: mk("gitlab.com", "group/subgroup", "proj"),
                     bare: false,
-                    want: "/tmp/ghqroot/gitlab.com/group/subgroup/proj",
+                    want: "/tmp/scaproot/gitlab.com/group/subgroup/proj",
                 },
             ),
             (
@@ -106,7 +106,7 @@ mod tests {
                 Case {
                     repo: mk("gitlab.com", "a/b/c/d", "proj"),
                     bare: false,
-                    want: "/tmp/ghqroot/gitlab.com/a/b/c/d/proj",
+                    want: "/tmp/scaproot/gitlab.com/a/b/c/d/proj",
                 },
             ),
             (
@@ -114,7 +114,7 @@ mod tests {
                 Case {
                     repo: mk("svn.code.sf.net", "p/ghq/code", "trunk"),
                     bare: false,
-                    want: "/tmp/ghqroot/svn.code.sf.net/p/ghq/code/trunk",
+                    want: "/tmp/scaproot/svn.code.sf.net/p/ghq/code/trunk",
                 },
             ),
             (
@@ -122,7 +122,7 @@ mod tests {
                 Case {
                     repo: mk("scm.sourceforge.jp", "gitroot/ghq", "ghq"),
                     bare: false,
-                    want: "/tmp/ghqroot/scm.sourceforge.jp/gitroot/ghq/ghq",
+                    want: "/tmp/scaproot/scm.sourceforge.jp/gitroot/ghq/ghq",
                 },
             ),
             (
@@ -130,7 +130,7 @@ mod tests {
                 Case {
                     repo: mk("git.assembla.com", "", "ghq"),
                     bare: false,
-                    want: "/tmp/ghqroot/git.assembla.com/ghq",
+                    want: "/tmp/scaproot/git.assembla.com/ghq",
                 },
             ),
             (
@@ -138,7 +138,7 @@ mod tests {
                 Case {
                     repo: mk("github.com", "Foo", "Bar"),
                     bare: false,
-                    want: "/tmp/ghqroot/github.com/Foo/Bar",
+                    want: "/tmp/scaproot/github.com/Foo/Bar",
                 },
             ),
             (
@@ -146,7 +146,7 @@ mod tests {
                 Case {
                     repo: mk("github.com", "user", "site.com"),
                     bare: false,
-                    want: "/tmp/ghqroot/github.com/user/site.com",
+                    want: "/tmp/scaproot/github.com/user/site.com",
                 },
             ),
             (
@@ -158,7 +158,7 @@ mod tests {
                         "myrepo",
                     ),
                     bare: false,
-                    want: "/tmp/ghqroot/git-codecommit.us-east-1.amazonaws.com/v1/repos/myrepo",
+                    want: "/tmp/scaproot/git-codecommit.us-east-1.amazonaws.com/v1/repos/myrepo",
                 },
             ),
         ];
@@ -171,10 +171,10 @@ mod tests {
 
     #[test]
     fn root_with_trailing_slash_is_normalized() {
-        let root = Path::new("/tmp/ghqroot/");
+        let root = Path::new("/tmp/scaproot/");
         let repo = mk("github.com", "motemen", "ghq");
         let got = dest_path(root, &repo, false);
-        assert_eq!(got, Path::new("/tmp/ghqroot/github.com/motemen/ghq"));
+        assert_eq!(got, Path::new("/tmp/scaproot/github.com/motemen/ghq"));
     }
 
     #[test]

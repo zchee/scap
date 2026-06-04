@@ -24,13 +24,13 @@ pub enum ConfigError {
 
 // ghq local_repository.go:355-395
 pub fn resolve_roots(all: bool) -> Result<Vec<PathBuf>, ConfigError> {
-    let env_root = std::env::var_os("GHQ_ROOT");
+    let env_root = std::env::var_os("SCAP_ROOT");
     let env_root_nonempty = env_root.as_ref().is_some_and(|v| !v.is_empty());
 
     let mut roots: Vec<PathBuf> = if env_root_nonempty {
         split_path_list(env_root.as_ref().unwrap())
     } else {
-        let mut from_git = git_config_get_all_path("ghq.root")?
+        let mut from_git = git_config_get_all_path("scap.root")?
             .into_iter()
             .map(PathBuf::from)
             .collect::<Vec<_>>();
@@ -40,7 +40,7 @@ pub fn resolve_roots(all: bool) -> Result<Vec<PathBuf>, ConfigError> {
 
     if roots.is_empty() {
         let home = dirs::home_dir().ok_or(ConfigError::NoHomeDir)?;
-        roots.push(home.join("ghq"));
+        roots.push(home.join("scap"));
     }
 
     if all && !env_root_nonempty {
@@ -63,7 +63,7 @@ pub fn resolve_roots(all: bool) -> Result<Vec<PathBuf>, ConfigError> {
 
 // ghq local_repository.go:123-135
 pub fn root_for_url(url: &str) -> Result<PathBuf, ConfigError> {
-    let env_root = std::env::var_os("GHQ_ROOT");
+    let env_root = std::env::var_os("SCAP_ROOT");
     if env_root.as_ref().is_some_and(|v| !v.is_empty()) {
         let mut list = split_path_list(env_root.as_ref().unwrap());
         if !list.is_empty() {
@@ -72,7 +72,7 @@ pub fn root_for_url(url: &str) -> Result<PathBuf, ConfigError> {
     }
 
     if !is_codecommit_like(url) {
-        let out = run_git_config(&["--path", "--get-urlmatch", "ghq.root", url])?;
+        let out = run_git_config(&["--path", "--get-urlmatch", "scap.root", url])?;
         if let Some(value) = out {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
@@ -98,19 +98,19 @@ pub fn git_config_get_all_path(key: &str) -> Result<Vec<String>, ConfigError> {
         .collect())
 }
 
-pub fn ghq_user() -> Result<Option<String>, ConfigError> {
-    run_git_config(&["--get", "ghq.user"]).map(|opt| opt.map(|v| v.trim().to_owned()))
+pub fn scap_user() -> Result<Option<String>, ConfigError> {
+    run_git_config(&["--get", "scap.user"]).map(|opt| opt.map(|v| v.trim().to_owned()))
 }
 
-pub fn ghq_complete_user() -> Result<bool, ConfigError> {
-    match run_git_config(&["--bool", "--get", "ghq.completeUser"])? {
+pub fn scap_complete_user() -> Result<bool, ConfigError> {
+    match run_git_config(&["--bool", "--get", "scap.completeUser"])? {
         Some(v) => Ok(v.trim() == "true"),
         None => Ok(false),
     }
 }
 
 fn url_match_local_repository_roots() -> Result<Vec<PathBuf>, ConfigError> {
-    let out = match run_git_config_multi(&["--path", "--get-regexp", r"^ghq\..+\.root$"])? {
+    let out = match run_git_config_multi(&["--path", "--get-regexp", r"^scap\..+\.root$"])? {
         s if s.is_empty() => return Ok(Vec::new()),
         s => s,
     };
@@ -258,14 +258,14 @@ mod tests {
                 std::env::var_os("GIT_CONFIG_NOSYSTEM"),
             ),
             ("GIT_CONFIG_GLOBAL", std::env::var_os("GIT_CONFIG_GLOBAL")),
-            ("GHQ_ROOT", std::env::var_os("GHQ_ROOT")),
+            ("SCAP_ROOT", std::env::var_os("SCAP_ROOT")),
             ("HOME", std::env::var_os("HOME")),
             ("XDG_CONFIG_HOME", std::env::var_os("XDG_CONFIG_HOME")),
         ];
 
         set_env("GIT_CONFIG_NOSYSTEM", "1");
         set_env("GIT_CONFIG_GLOBAL", &cfg);
-        unset_env("GHQ_ROOT");
+        unset_env("SCAP_ROOT");
         set_env("HOME", tmp.path());
         set_env("XDG_CONFIG_HOME", tmp.path().join("xdg"));
 
@@ -281,9 +281,9 @@ mod tests {
 
     #[test]
     #[serial]
-    fn resolve_roots_uses_ghq_root_env_when_set() {
+    fn resolve_roots_uses_scap_root_env_when_set() {
         let _g = setup("");
-        set_env("GHQ_ROOT", "/p/one:/p/two");
+        set_env("SCAP_ROOT", "/p/one:/p/two");
         let got = resolve_roots(false).unwrap();
         assert_eq!(got, vec![pb("/p/one"), pb("/p/two")]);
         let got_all = resolve_roots(true).unwrap();
@@ -293,16 +293,16 @@ mod tests {
     #[test]
     #[serial]
     fn resolve_roots_reverses_multi_root_from_gitconfig() {
-        let _g = setup("[ghq]\n\troot = /a\n\troot = /b\n\troot = /c\n");
+        let _g = setup("[scap]\n\troot = /a\n\troot = /b\n\troot = /c\n");
         let got = resolve_roots(false).unwrap();
         assert_eq!(got, vec![pb("/c"), pb("/b"), pb("/a")]);
     }
 
     #[test]
     #[serial]
-    fn resolve_roots_falls_back_to_home_ghq() {
+    fn resolve_roots_falls_back_to_home_scap() {
         let g = setup("");
-        let expected = Path::new(&std::env::var_os("HOME").unwrap()).join("ghq");
+        let expected = Path::new(&std::env::var_os("HOME").unwrap()).join("scap");
         let got = resolve_roots(false).unwrap();
         assert_eq!(got, vec![expected]);
         drop(g);
@@ -312,7 +312,7 @@ mod tests {
     #[serial]
     fn resolve_roots_all_appends_urlmatch_roots() {
         let _g =
-            setup("[ghq]\n\troot = /default\n[ghq \"https://example.com/\"]\n\troot = /custom\n");
+            setup("[scap]\n\troot = /default\n[scap \"https://example.com/\"]\n\troot = /custom\n");
         let no_all = resolve_roots(false).unwrap();
         assert_eq!(no_all, vec![pb("/default")]);
         let all = resolve_roots(true).unwrap();
@@ -323,16 +323,16 @@ mod tests {
     #[test]
     #[serial]
     fn resolve_roots_dedups() {
-        let _g = setup("[ghq]\n\troot = /same\n\troot = /same\n");
+        let _g = setup("[scap]\n\troot = /same\n\troot = /same\n");
         let got = resolve_roots(false).unwrap();
         assert_eq!(got, vec![pb("/same")]);
     }
 
     #[test]
     #[serial]
-    fn root_for_url_uses_ghq_root_env_first() {
-        let _g = setup("[ghq]\n\troot = /default\n");
-        set_env("GHQ_ROOT", "/env-first:/env-second");
+    fn root_for_url_uses_scap_root_env_first() {
+        let _g = setup("[scap]\n\troot = /default\n");
+        set_env("SCAP_ROOT", "/env-first:/env-second");
         let got = root_for_url("https://github.com/foo/bar").unwrap();
         assert_eq!(got, pb("/env-first"));
     }
@@ -341,7 +341,7 @@ mod tests {
     #[serial]
     fn root_for_url_consults_urlmatch_first() {
         let _g = setup(
-            "[ghq]\n\troot = /default\n[ghq \"https://special.example.com/\"]\n\troot = /special\n",
+            "[scap]\n\troot = /default\n[scap \"https://special.example.com/\"]\n\troot = /special\n",
         );
         let special = root_for_url("https://special.example.com/foo/bar").unwrap();
         assert_eq!(special, pb("/special"));
@@ -352,38 +352,39 @@ mod tests {
     #[test]
     #[serial]
     fn root_for_url_skips_urlmatch_for_codecommit() {
-        let _g =
-            setup("[ghq]\n\troot = /default\n[ghq \"codecommit\"]\n\troot = /should-be-ignored\n");
+        let _g = setup(
+            "[scap]\n\troot = /default\n[scap \"codecommit\"]\n\troot = /should-be-ignored\n",
+        );
         let got = root_for_url("codecommit::us-east-1://my-repo").unwrap();
         assert_eq!(got, pb("/default"));
     }
 
     #[test]
     #[serial]
-    fn ghq_user_returns_value_when_set() {
-        let _g = setup("[ghq]\n\tuser = motemen\n");
-        assert_eq!(ghq_user().unwrap(), Some("motemen".to_owned()));
+    fn scap_user_returns_value_when_set() {
+        let _g = setup("[scap]\n\tuser = motemen\n");
+        assert_eq!(scap_user().unwrap(), Some("motemen".to_owned()));
     }
 
     #[test]
     #[serial]
-    fn ghq_user_returns_none_when_unset() {
+    fn scap_user_returns_none_when_unset() {
         let _g = setup("");
-        assert_eq!(ghq_user().unwrap(), None);
+        assert_eq!(scap_user().unwrap(), None);
     }
 
     #[test]
     #[serial]
-    fn ghq_complete_user_parses_bool() {
-        let _g = setup("[ghq]\n\tcompleteUser = true\n");
-        assert!(ghq_complete_user().unwrap());
+    fn scap_complete_user_parses_bool() {
+        let _g = setup("[scap]\n\tcompleteUser = true\n");
+        assert!(scap_complete_user().unwrap());
     }
 
     #[test]
     #[serial]
-    fn ghq_complete_user_defaults_false() {
+    fn scap_complete_user_defaults_false() {
         let _g = setup("");
-        assert!(!ghq_complete_user().unwrap());
+        assert!(!scap_complete_user().unwrap());
     }
 
     #[test]

@@ -25,7 +25,7 @@ impl Env {
         let mut cmd = Command::cargo_bin("scap").unwrap();
         cmd.env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", &cfg)
-            .env("GHQ_ROOT", self.root.path())
+            .env("SCAP_ROOT", self.root.path())
             .env("HOME", self.home.path());
         cmd
     }

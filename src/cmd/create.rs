@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 
 use crate::cli::CreateArgs;
 use crate::{config, path as scap_path, url as scap_url};
@@ -16,9 +16,9 @@ pub fn run(args: &CreateArgs) -> anyhow::Result<()> {
 
     validate_vcs(args.vcs.as_deref())?;
 
-    let ghq_user = config::ghq_user().context("read ghq.user")?;
-    let complete_user = config::ghq_complete_user().context("read ghq.completeUser")?;
-    let repo = scap_url::from_input(&args.target, ghq_user.as_deref(), complete_user)?;
+    let scap_user = config::scap_user().context("read scap.user")?;
+    let complete_user = config::scap_complete_user().context("read scap.completeUser")?;
+    let repo = scap_url::from_input(&args.target, scap_user.as_deref(), complete_user)?;
 
     let root = config::root_for_url(&repo.https_url).context("resolve root")?;
     let dest = scap_path::dest_path(&root, &repo, args.bare);

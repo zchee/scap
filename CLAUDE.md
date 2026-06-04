@@ -11,7 +11,7 @@ scap is a remote repository management CLI in Rust, inspired by [x-motemen/ghq](
 Mirror ghq's user-facing surface unless there's a concrete reason to diverge. Before adding or renaming a subcommand or config key, check what ghq does (`ghq help <cmd>`, ghq's `gitconfig` keys under `ghq.*`) and match it.
 
 - Subcommands to mirror: `get` (alias `clone`), `list`, `rm`, `root`, `create`.
-- Root path resolution should follow ghq's precedence: `$GHQ_ROOT` env, then `ghq.root` git config, then `~/ghq`. scap's equivalents must be documented in code comments when they intentionally differ.
+- Root path resolution should follow ghq's precedence: `$SCAP_ROOT` env, then `ghq.root` git config, then `~/ghq`. scap's equivalents must be documented in code comments when they intentionally differ.
 - Path layout: `<root>/<host>/<user>/<repo>` (e.g. `~/ghq/github.com/zchee/scap`).
 
 If you're about to introduce a command, flag, or config key that doesn't exist in ghq, surface that divergence in the PR description rather than silently inventing surface area.

@@ -36,7 +36,7 @@ fn isolated(home: &std::path::Path, root: &std::path::Path) -> Vec<(String, Stri
             cfg.to_string_lossy().into_owned(),
         ),
         ("HOME".to_string(), home.to_string_lossy().into_owned()),
-        ("GHQ_ROOT".to_string(), root.to_string_lossy().into_owned()),
+        ("SCAP_ROOT".to_string(), root.to_string_lossy().into_owned()),
     ]
 }
 

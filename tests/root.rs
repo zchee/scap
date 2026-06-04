@@ -27,7 +27,7 @@ impl Fixture {
 
     fn cmd(&self) -> Command {
         let mut c = Command::cargo_bin("scap").unwrap();
-        c.env_remove("GHQ_ROOT")
+        c.env_remove("SCAP_ROOT")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", &self.cfg_path)
             .env("HOME", &self.home_path);
@@ -40,7 +40,7 @@ fn root_prints_first_ghq_root_env_entry() {
     let f = Fixture::new("");
     f.cmd()
         .arg("root")
-        .env("GHQ_ROOT", "/path1:/path2")
+        .env("SCAP_ROOT", "/path1:/path2")
         .assert()
         .success()
         .stdout(predicate::str::diff("/path1\n"));
@@ -52,7 +52,7 @@ fn root_all_prints_every_ghq_root_env_entry() {
     f.cmd()
         .arg("root")
         .arg("--all")
-        .env("GHQ_ROOT", "/path1:/path2")
+        .env("SCAP_ROOT", "/path1:/path2")
         .assert()
         .success()
         .stdout(predicate::str::diff("/path1\n/path2\n"));
@@ -60,7 +60,7 @@ fn root_all_prints_every_ghq_root_env_entry() {
 
 #[test]
 fn root_reverses_multi_root_from_gitconfig() {
-    let f = Fixture::new("[ghq]\n\troot = /a\n\troot = /b\n\troot = /c\n");
+    let f = Fixture::new("[scap]\n\troot = /a\n\troot = /b\n\troot = /c\n");
     f.cmd()
         .arg("root")
         .assert()
@@ -70,7 +70,7 @@ fn root_reverses_multi_root_from_gitconfig() {
 
 #[test]
 fn root_all_reverses_multi_root_from_gitconfig() {
-    let f = Fixture::new("[ghq]\n\troot = /a\n\troot = /b\n\troot = /c\n");
+    let f = Fixture::new("[scap]\n\troot = /a\n\troot = /b\n\troot = /c\n");
     f.cmd()
         .arg("root")
         .arg("--all")
@@ -81,8 +81,8 @@ fn root_all_reverses_multi_root_from_gitconfig() {
 
 #[test]
 fn root_all_appends_urlmatch_roots_when_ghq_root_unset() {
-    let cfg = "[ghq]\n\troot = /default\n\
-              [ghq \"https://example.com\"]\n\troot = /custom\n";
+    let cfg = "[scap]\n\troot = /default\n\
+              [scap \"https://example.com\"]\n\troot = /custom\n";
     let f = Fixture::new(cfg);
 
     f.cmd()
@@ -103,7 +103,7 @@ fn root_all_appends_urlmatch_roots_when_ghq_root_unset() {
 #[test]
 fn root_falls_back_to_home_ghq_when_unconfigured() {
     let f = Fixture::new("");
-    let expected = format!("{}/ghq\n", f.home_path.display());
+    let expected = format!("{}/scap\n", f.home_path.display());
     f.cmd()
         .arg("root")
         .assert()

@@ -13,9 +13,9 @@ Initial release. A Rust port of [x-motemen/ghq](https://github.com/x-motemen/ghq
 - `scap rm`: interactive removal with `--dry-run` and `--bare`. Strict `y` confirmation matches ghq exactly.
 - `scap root`: print repository root(s), with `--all`.
 - `scap create`: initialize a new repository at the computed path, with `--bare` and `--vcs`.
-- Multi-root resolution: `$GHQ_ROOT` (path-list) → reversed multi `ghq.root` → `~/ghq`. `--all` and per-URL `ghq.<url>.root` urlmatch override.
+- Multi-root resolution: `$SCAP_ROOT` (path-list) → reversed multi `scap.root` → `~/scap`. `--all` and per-URL `scap.<url>.root` urlmatch override.
 - Symlink-resolved root paths (matches ghq `local_repository.go:399-405`).
-- Configurable via `git config` keys: `ghq.root`, `ghq.user`, `ghq.completeUser`, `ghq.<url>.root`.
+- Configurable via `git config` keys: `scap.root`, `scap.user`, `scap.completeUser`, `scap.<url>.root`.
 - 76 tests across lib unit and integration suites, all running real `git config` and real local git fixtures (no mocks per project convention).
 
 ### Intentional divergences from ghq 1.8.0
