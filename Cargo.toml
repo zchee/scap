@@ -10,19 +10,19 @@ readme = "README.md"
 
 [dependencies]
 jwalk = "0.8.1"
-anyhow = "1"
-bstr = "1"
-clap = { version = "4", features = ["derive", "wrap_help"] }
+anyhow = { version = "1", default-features = false }
+bstr = { version = "1", default-features = false }
+clap = { version = "4", features = ["derive"] }
 dirs = "6"
 fs2 = "0.4"
 gix-url = "0.36"
 regex = "1.12.3"
-thiserror = "2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = { version = "2", default-features = false }
+tracing = { version = "0.1", features = ["attributes"], default-features = false }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], default-features = false }
 
 [dev-dependencies]
 assert_cmd = "2"
-predicates = "3"
-serial_test = "3.4.0"
-tempfile = "3"
+predicates = { version = "3", default-features = false }
+serial_test = { version = "3.4.0", default-features = false }
+tempfile = { version = "3", default-features = false }
