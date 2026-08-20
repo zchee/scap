@@ -274,15 +274,10 @@ fn build_github_repo(original: &str, owner: &str, name: &str) -> Repo {
 fn parse_codecommit(input: &str) -> Option<(String, Option<String>, Option<String>, String)> {
     let rest = input.strip_prefix("codecommit:")?;
     let (region, rest) = if let Some(after) = rest.strip_prefix(':') {
-        if let Some(end) = after.find("://") {
-            (Some(after[..end].to_owned()), &after[end + 3..])
-        } else {
-            return None;
-        }
-    } else if let Some(after) = rest.strip_prefix("//") {
-        (None, after)
+        let end = after.find("://")?;
+        (Some(after[..end].to_owned()), &after[end + 3..])
     } else {
-        return None;
+        (None, rest.strip_prefix("//")?)
     };
     if rest.is_empty() {
         return None;
