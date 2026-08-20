@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{BufRead, Write};
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 
 use crate::cli::RmArgs;
 use crate::{config, path as scap_path, url as scap_url};

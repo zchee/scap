@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 
 use crate::cli::CreateArgs;
 use crate::{config, path as scap_path, url as scap_url};
