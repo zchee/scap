@@ -145,7 +145,7 @@ fn walk_for_repos_with_seen(
                 };
 
                 if is_repo_dir_entry(child) {
-                    child.read_children_path = None;
+                    child.read_children = None;
                     child.client_state = true;
                 }
             }
