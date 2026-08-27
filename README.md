@@ -54,7 +54,7 @@ See `.omc/plans/2026-05-23-ghq-port-rust.md` for full ADRs and design rationale.
 
 ## Development
 
-Toolchain pinned to stable Rust via `rust-toolchain.toml`. Project conventions in `CLAUDE.md`.
+Toolchain pinned to nightly Rust via `rust-toolchain.toml`. Project conventions in `CLAUDE.md`.
 
 Quality gates (all must pass before commit):
 

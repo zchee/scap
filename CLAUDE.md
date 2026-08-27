@@ -18,7 +18,7 @@ If you're about to introduce a command, flag, or config key that doesn't exist i
 
 ## Toolchain
 
-This project targets **stable Rust**. `rust-toolchain.toml` pins the channel to `stable` with `rustfmt`, `clippy`, and `rust-src` components, so plain `cargo build` / `cargo test` / `cargo fmt` / `cargo clippy` use the pinned stable toolchain automatically — do not invoke `cargo +nightly` or pin a different toolchain. If a nightly-only feature is genuinely needed, open an ADR first (see `.omc/plans/`).
+This project targets **nightly Rust**. `rust-toolchain.toml` pins the channel to `nightly` with `rustfmt` and `clippy` components, so plain `cargo build` / `cargo test` / `cargo fmt` / `cargo clippy` use the pinned nightly toolchain automatically — do not pin a different toolchain. `rustfmt.toml` depends on nightly-only options (`group_imports`, `imports_granularity`, `normalize_comments`, `format_code_in_doc_comments`, `error_on_line_overflow`, `error_on_unformatted`), so formatting is not reproducible on stable. Nightly formatting behaviour can shift between dates; if `cargo fmt --check` starts failing without a source change, suspect a toolchain bump before the code.
 
 ## CLI
 
