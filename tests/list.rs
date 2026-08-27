@@ -1,5 +1,7 @@
 use std::fs;
 #[cfg(unix)]
+use std::os::unix::fs as unix_fs;
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::Path;
 
@@ -7,9 +9,6 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use serial_test::serial;
 use tempfile::TempDir;
-
-#[cfg(unix)]
-use std::os::unix::fs as unix_fs;
 
 fn isolated(cmd: &mut Command, home: &Path, root: &Path) {
     let cfg = home.join("gitconfig");
@@ -45,11 +44,7 @@ fn init_repo_with_dot_git(root: &Path, rel: &str) {
         .arg(&dest)
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "git init --separate-git-dir failed: {:?}",
-        out
-    );
+    assert!(out.status.success(), "git init --separate-git-dir failed: {:?}", out);
 }
 
 fn write_gitignore(root: &Path, rel: &str, contents: &str) {
@@ -116,10 +111,7 @@ fn list_prints_relative_paths_sorted() {
     init_repo(root.path(), "github.com/b/y", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/x\ngithub.com/b/y\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\ngithub.com/b/y\n"));
 }
 
 #[test]
@@ -131,10 +123,7 @@ fn list_direct_root_repo() {
     init_repo(root.path(), "direct", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("direct\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("direct\n"));
 }
 
 #[test]
@@ -146,10 +135,7 @@ fn list_prunes_nested_repos_below_repo_root() {
     init_repo(root.path(), "github.com/a/x/nested/child", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/x\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\n"));
 }
 
 #[test]
@@ -160,10 +146,7 @@ fn list_hidden_repo_path_is_not_filtered() {
     init_repo(root.path(), ".hidden/repo", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq(".hidden/repo\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq(".hidden/repo\n"));
 }
 
 #[test]
@@ -175,10 +158,7 @@ fn list_ignores_gitignore_patterns_when_listing_repos() {
     write_text(&root.path().join(".gitignore"), "ignored\n");
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("ignored/repo\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("ignored/repo\n"));
 }
 
 #[test]
@@ -194,10 +174,7 @@ fn list_symlinked_repo_is_discovered_once() {
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
     #[cfg(unix)]
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("real/repo\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("real/repo\n"));
     #[cfg(not(unix))]
     cmd.arg("list").assert().success().stdout(predicate::eq(""));
 }
@@ -210,10 +187,7 @@ fn list_reports_dot_when_root_is_a_repo() {
     init_repo(root.path(), ".", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq(".\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq(".\n"));
 }
 
 #[test]
@@ -225,10 +199,7 @@ fn list_prunes_direct_root_repo_contents() {
     fs::create_dir_all(root.path().join("pkg/level/depth")).unwrap();
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq(".\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq(".\n"));
 }
 
 #[test]
@@ -240,10 +211,7 @@ fn list_includes_hidden_and_ignored_repo_paths() {
     fs::write(root.path().join(".gitignore"), b"*.hidden\n").unwrap();
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq(".hidden\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq(".hidden\n"));
 }
 
 #[test]
@@ -259,10 +227,7 @@ fn list_reports_real_and_symlinked_repos() {
 
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("real\nrepo_link\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("real\nrepo_link\n"));
 }
 
 #[test]
@@ -275,10 +240,7 @@ fn list_detects_git_file_repositories() {
 
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("repo\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("repo\n"));
 }
 
 #[test]
@@ -291,10 +253,7 @@ fn list_full_path_prints_absolute_paths() {
     isolated(&mut cmd, home.path(), root.path());
     let real_root = fs::canonicalize(root.path()).unwrap();
     let expected = format!("{}/github.com/a/x\n", real_root.display());
-    cmd.args(["list", "-p"])
-        .assert()
-        .success()
-        .stdout(predicate::eq(expected));
+    cmd.args(["list", "-p"]).assert().success().stdout(predicate::eq(expected));
 }
 
 #[test]
@@ -306,10 +265,7 @@ fn list_unique_prints_shortest_unambiguous_subpath() {
     init_repo(root.path(), "github.com/b/y", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.args(["list", "--unique"])
-        .assert()
-        .success()
-        .stdout(predicate::eq("x\ny\n"));
+    cmd.args(["list", "--unique"]).assert().success().stdout(predicate::eq("x\ny\n"));
 }
 
 #[test]
@@ -321,10 +277,7 @@ fn list_substring_query_filters() {
     init_repo(root.path(), "github.com/beta/bar", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.args(["list", "alpha"])
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/alpha/foo\n"));
+    cmd.args(["list", "alpha"]).assert().success().stdout(predicate::eq("github.com/alpha/foo\n"));
 }
 
 #[test]
@@ -400,10 +353,7 @@ fn list_walks_multiple_roots() {
         .env("GIT_CONFIG_GLOBAL", &cfg)
         .env_remove("SCAP_ROOT")
         .env("HOME", home.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/x\ngithub.com/b/y\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\ngithub.com/b/y\n"));
 }
 
 #[test]
@@ -416,10 +366,7 @@ fn list_prunes_subtrees_beneath_repositories() {
 
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/x\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\n"));
 }
 
 #[test]
@@ -431,10 +378,7 @@ fn list_keeps_hidden_paths_in_results() {
 
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq(".hidden/github.com/a/x\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq(".hidden/github.com/a/x\n"));
 }
 
 #[test]
@@ -447,10 +391,7 @@ fn list_does_not_filter_ignored_paths() {
 
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/x\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\n"));
 }
 
 #[test]
@@ -475,10 +416,7 @@ fn list_prunes_nested_repositories_under_repo() {
     init_repo(root.path(), "github.com/a/x/sub/inner", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/x\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\n"));
 }
 
 #[test]
@@ -489,10 +427,7 @@ fn list_keeps_hidden_paths() {
     init_repo(root.path(), ".hidden/github.com/a/x", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq(".hidden/github.com/a/x\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq(".hidden/github.com/a/x\n"));
 }
 
 #[test]
@@ -504,10 +439,7 @@ fn list_does_not_filter_gitignored_paths() {
     init_repo(root.path(), "ignored/github.com/a/x", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("ignored/github.com/a/x\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("ignored/github.com/a/x\n"));
 }
 
 #[test]
@@ -519,10 +451,7 @@ fn list_recognizes_gitfile_markers() {
     init_repo_with_gitfile_marker(root.path(), "github.com/a/x");
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/x\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\n"));
 }
 
 #[test]
@@ -534,10 +463,7 @@ fn list_prunes_nested_repo_subtree() {
     init_repo(root.path(), "github.com/a/outer/nested/inner", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/outer\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/outer\n"));
 }
 
 #[test]
@@ -548,10 +474,7 @@ fn list_includes_hidden_repo_paths() {
     init_repo(root.path(), ".hidden/org/proj", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq(".hidden/org/proj\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq(".hidden/org/proj\n"));
 }
 
 #[test]
@@ -563,10 +486,7 @@ fn list_does_not_filter_by_parent_gitignore() {
     init_repo(root.path(), "github.com/ignored/repo", false);
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/ignored/repo\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/ignored/repo\n"));
 }
 
 #[test]
@@ -578,10 +498,7 @@ fn list_detects_git_file_markers() {
     init_repo_with_gitfile_marker(root.path(), "github.com/a/worktree");
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/worktree\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/worktree\n"));
 }
 
 #[cfg(unix)]
@@ -615,10 +532,7 @@ fn list_keeps_hidden_repositories_and_nonrepo_hidden_paths() {
     fs::create_dir_all(root.path().join("github.com/a/.cache")).unwrap();
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/.hidden\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/.hidden\n"));
 }
 
 #[test]
@@ -630,10 +544,7 @@ fn list_does_not_filter_by_gitignore_contents() {
     fs::write(root.path().join(".gitignore"), "github.com/a/x\n").unwrap();
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/x\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\n"));
 }
 
 #[test]
@@ -650,10 +561,7 @@ fn list_includes_symlinked_repository_target() {
     }
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/x\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\n"));
 }
 
 #[test]
@@ -665,8 +573,5 @@ fn list_detects_gitdir_marker_repositories() {
     init_repo_with_gitdir_marker(root.path(), "github.com/a/x");
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list")
-        .assert()
-        .success()
-        .stdout(predicate::eq("github.com/a/x\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\n"));
 }

@@ -152,11 +152,7 @@ mod tests {
             (
                 "codecommit_shape",
                 Case {
-                    repo: mk(
-                        "git-codecommit.us-east-1.amazonaws.com",
-                        "v1/repos",
-                        "myrepo",
-                    ),
+                    repo: mk("git-codecommit.us-east-1.amazonaws.com", "v1/repos", "myrepo"),
                     bare: false,
                     want: "/tmp/scaproot/git-codecommit.us-east-1.amazonaws.com/v1/repos/myrepo",
                 },
@@ -181,19 +177,13 @@ mod tests {
     fn rel_path_has_no_root_prefix() {
         let repo = mk("github.com", "motemen", "ghq");
         assert_eq!(rel_path(&repo, false), Path::new("github.com/motemen/ghq"));
-        assert_eq!(
-            rel_path(&repo, true),
-            Path::new("github.com/motemen/ghq.git"),
-        );
+        assert_eq!(rel_path(&repo, true), Path::new("github.com/motemen/ghq.git"),);
     }
 
     #[test]
     fn rel_path_preserves_multi_segment_owner() {
         let repo = mk("stash.com", "scm/motemen", "ghq");
-        assert_eq!(
-            rel_path(&repo, false),
-            Path::new("stash.com/scm/motemen/ghq")
-        );
+        assert_eq!(rel_path(&repo, false), Path::new("stash.com/scm/motemen/ghq"));
     }
 
     #[test]

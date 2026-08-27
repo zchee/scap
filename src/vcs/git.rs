@@ -6,11 +6,7 @@ pub enum GitError {
     #[error("failed to invoke `git`: {0}")]
     Spawn(#[from] std::io::Error),
     #[error("`git {args}` in {dir} failed (status {status})")]
-    NonZeroExit {
-        args: String,
-        dir: String,
-        status: i32,
-    },
+    NonZeroExit { args: String, dir: String, status: i32 },
 }
 
 #[derive(Debug, Clone)]
@@ -77,11 +73,7 @@ pub fn update(url: &str, dest: &Path, opts: &UpdateOptions) -> Result<(), GitErr
     }
     run(Some(dest), opts.silent, &["pull", "--ff-only"])?;
     if opts.recursive {
-        run(
-            Some(dest),
-            opts.silent,
-            &["submodule", "update", "--init", "--recursive"],
-        )?;
+        run(Some(dest), opts.silent, &["submodule", "update", "--init", "--recursive"])?;
     }
     Ok(())
 }
@@ -93,10 +85,7 @@ pub fn dest_is_git_repo(dest: &Path) -> bool {
     if dest.join(".git").is_dir() {
         return true;
     }
-    if dest
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.ends_with(".git"))
+    if dest.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".git"))
         && dest.join("HEAD").is_file()
         && dest.join("objects").is_dir()
         && dest.join("refs").is_dir()

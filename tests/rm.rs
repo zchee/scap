@@ -41,13 +41,9 @@ fn rm_errors_when_target_is_missing() {
     let missing = root.path().join("github.com/motemen/nonexistent");
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated_env(&mut cmd, home.path(), root.path());
-    cmd.args(["rm", "motemen/nonexistent"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(format!(
-            "directory \"{}\" does not exist",
-            missing.display()
-        )));
+    cmd.args(["rm", "motemen/nonexistent"]).assert().failure().stderr(predicate::str::contains(
+        format!("directory \"{}\" does not exist", missing.display()),
+    ));
 }
 
 #[test]
@@ -60,10 +56,7 @@ fn rm_dry_run_does_not_remove() {
     cmd.args(["rm", "--dry-run", "motemen/foo"])
         .assert()
         .success()
-        .stdout(predicate::str::diff(format!(
-            "Would remove {}\n",
-            dest.display()
-        )));
+        .stdout(predicate::str::diff(format!("Would remove {}\n", dest.display())));
     assert!(dest.exists(), "dry-run must not remove");
     assert!(dest.join(".git").exists(), "dry-run must leave .git");
 }
@@ -79,10 +72,7 @@ fn rm_confirm_yes_removes() {
         .write_stdin("y\n")
         .assert()
         .success()
-        .stdout(predicate::str::diff(format!(
-            "Removed {}\n",
-            dest.display()
-        )));
+        .stdout(predicate::str::diff(format!("Removed {}\n", dest.display())));
     assert!(!dest.exists(), "confirmed rm must remove dest");
 }
 
@@ -128,10 +118,7 @@ fn rm_bare_removes_dotgit_dest() {
         .write_stdin("y\n")
         .assert()
         .success()
-        .stdout(predicate::str::diff(format!(
-            "Removed {}\n",
-            dest.display()
-        )));
+        .stdout(predicate::str::diff(format!("Removed {}\n", dest.display())));
     assert!(!dest.exists(), "bare rm must remove <path>.git");
 }
 

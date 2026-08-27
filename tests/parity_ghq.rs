@@ -1,6 +1,7 @@
-use assert_cmd::Command as ScapCmd;
 use std::fs;
 use std::process::Command;
+
+use assert_cmd::Command as ScapCmd;
 use tempfile::TempDir;
 
 fn ghq_binary() -> Option<std::path::PathBuf> {
@@ -11,11 +12,9 @@ fn ghq_binary() -> Option<std::path::PathBuf> {
         }
     }
     let home = std::env::var("HOME").unwrap_or_default();
-    for candidate in [
-        format!("{home}/go/bin/ghq"),
-        "/usr/local/bin/ghq".into(),
-        "/opt/homebrew/bin/ghq".into(),
-    ] {
+    for candidate in
+        [format!("{home}/go/bin/ghq"), "/usr/local/bin/ghq".into(), "/opt/homebrew/bin/ghq".into()]
+    {
         let pb = std::path::PathBuf::from(candidate);
         if pb.exists() {
             return Some(pb);
@@ -31,10 +30,7 @@ fn isolated(home: &std::path::Path, root: &std::path::Path) -> Vec<(String, Stri
     }
     vec![
         ("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string()),
-        (
-            "GIT_CONFIG_GLOBAL".to_string(),
-            cfg.to_string_lossy().into_owned(),
-        ),
+        ("GIT_CONFIG_GLOBAL".to_string(), cfg.to_string_lossy().into_owned()),
         ("HOME".to_string(), home.to_string_lossy().into_owned()),
         ("SCAP_ROOT".to_string(), root.to_string_lossy().into_owned()),
     ]
@@ -42,12 +38,7 @@ fn isolated(home: &std::path::Path, root: &std::path::Path) -> Vec<(String, Stri
 
 fn init_repo(path: &std::path::Path) {
     std::fs::create_dir_all(path).unwrap();
-    Command::new("git")
-        .arg("init")
-        .arg("-q")
-        .current_dir(path)
-        .output()
-        .unwrap();
+    Command::new("git").arg("init").arg("-q").current_dir(path).output().unwrap();
 }
 
 #[test]
@@ -58,17 +49,9 @@ fn root_matches_ghq() {
     let root = TempDir::new().unwrap();
     let env = isolated(home.path(), root.path());
 
-    let ghq_out = Command::new(&ghq)
-        .arg("root")
-        .envs(env.iter().cloned())
-        .output()
-        .unwrap();
-    let scap_out = ScapCmd::cargo_bin("scap")
-        .unwrap()
-        .arg("root")
-        .envs(env.iter().cloned())
-        .output()
-        .unwrap();
+    let ghq_out = Command::new(&ghq).arg("root").envs(env.iter().cloned()).output().unwrap();
+    let scap_out =
+        ScapCmd::cargo_bin("scap").unwrap().arg("root").envs(env.iter().cloned()).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&ghq_out.stdout),
         String::from_utf8_lossy(&scap_out.stdout),
@@ -84,32 +67,16 @@ fn list_matches_ghq() {
     let root = TempDir::new().unwrap();
     let env = isolated(home.path(), root.path());
 
-    for rel in [
-        "github.com/a/x",
-        "github.com/b/y",
-        "gitlab.com/group/sub/proj",
-    ] {
+    for rel in ["github.com/a/x", "github.com/b/y", "gitlab.com/group/sub/proj"] {
         let p = root.path().join(rel);
         std::fs::create_dir_all(&p).unwrap();
-        Command::new("git")
-            .arg("init")
-            .arg("-q")
-            .current_dir(&p)
-            .output()
-            .unwrap();
+        Command::new("git").arg("init").arg("-q").current_dir(&p).output().unwrap();
     }
 
-    for flags in [
-        vec!["list"],
-        vec!["list", "-p"],
-        vec!["list", "--unique"],
-        vec!["list", "-e", "x"],
-    ] {
-        let ghq_out = Command::new(&ghq)
-            .args(&flags)
-            .envs(env.iter().cloned())
-            .output()
-            .unwrap();
+    for flags in
+        [vec!["list"], vec!["list", "-p"], vec!["list", "--unique"], vec!["list", "-e", "x"]]
+    {
+        let ghq_out = Command::new(&ghq).args(&flags).envs(env.iter().cloned()).output().unwrap();
         let scap_out = ScapCmd::cargo_bin("scap")
             .unwrap()
             .args(&flags)
@@ -137,23 +104,12 @@ fn list_matches_ghq_with_hidden_and_gitdir_repos() {
     std::fs::create_dir_all(&gitdir_repo).unwrap();
     let marker_dir = gitdir_repo.join(".git-real");
     std::fs::create_dir_all(&marker_dir).unwrap();
-    std::fs::write(
-        gitdir_repo.join(".git"),
-        format!("gitdir: {}\n", marker_dir.display()),
-    )
-    .unwrap();
+    std::fs::write(gitdir_repo.join(".git"), format!("gitdir: {}\n", marker_dir.display()))
+        .unwrap();
 
-    let ghq_out = Command::new(&ghq)
-        .arg("list")
-        .envs(env.iter().cloned())
-        .output()
-        .unwrap();
-    let scap_out = ScapCmd::cargo_bin("scap")
-        .unwrap()
-        .arg("list")
-        .envs(env.iter().cloned())
-        .output()
-        .unwrap();
+    let ghq_out = Command::new(&ghq).arg("list").envs(env.iter().cloned()).output().unwrap();
+    let scap_out =
+        ScapCmd::cargo_bin("scap").unwrap().arg("list").envs(env.iter().cloned()).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&ghq_out.stdout),
         String::from_utf8_lossy(&scap_out.stdout),
@@ -179,11 +135,7 @@ fn get_local_file_url_matches_ghq() {
 
     let r_ghq = TempDir::new().unwrap();
     let env_ghq = isolated(home.path(), r_ghq.path());
-    Command::new(&ghq)
-        .args(["get", &url])
-        .envs(env_ghq.iter().cloned())
-        .output()
-        .unwrap();
+    Command::new(&ghq).args(["get", &url]).envs(env_ghq.iter().cloned()).output().unwrap();
 
     let r_scap = TempDir::new().unwrap();
     let env_scap = isolated(home.path(), r_scap.path());
@@ -223,17 +175,9 @@ fn compare_list(
     flags: &[&str],
 ) {
     let env = isolated(home, root);
-    let ghq_out = Command::new(ghq)
-        .args(flags)
-        .envs(env.iter().cloned())
-        .output()
-        .unwrap();
-    let scap_out = ScapCmd::cargo_bin("scap")
-        .unwrap()
-        .args(flags)
-        .envs(env.iter().cloned())
-        .output()
-        .unwrap();
+    let ghq_out = Command::new(ghq).args(flags).envs(env.iter().cloned()).output().unwrap();
+    let scap_out =
+        ScapCmd::cargo_bin("scap").unwrap().args(flags).envs(env.iter().cloned()).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&ghq_out.stdout),
         String::from_utf8_lossy(&scap_out.stdout),
@@ -247,12 +191,7 @@ fn list_matches_ghq_for_direct_root_repo() {
     let Some(ghq) = ghq_binary() else { return };
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
-    Command::new("git")
-        .arg("init")
-        .arg("-q")
-        .current_dir(root.path())
-        .output()
-        .unwrap();
+    Command::new("git").arg("init").arg("-q").current_dir(root.path()).output().unwrap();
     compare_list(&ghq, home.path(), root.path(), &["list"]);
 }
 
@@ -264,12 +203,7 @@ fn list_matches_ghq_for_symlinked_repo_entries() {
     let root = TempDir::new().unwrap();
     let repo = root.path().join("github.com/a/x");
     fs::create_dir_all(&repo).unwrap();
-    Command::new("git")
-        .arg("init")
-        .arg("-q")
-        .current_dir(&repo)
-        .output()
-        .unwrap();
+    Command::new("git").arg("init").arg("-q").current_dir(&repo).output().unwrap();
     let link = root.path().join("link-x");
     std::os::unix::fs::symlink(&repo, &link).unwrap();
     compare_list(&ghq, home.path(), root.path(), &["list"]);
@@ -283,12 +217,7 @@ fn list_matches_ghq_for_gitfile_markers() {
     let root = TempDir::new().unwrap();
     let repo = root.path().join("github.com/a/x");
     fs::create_dir_all(&repo).unwrap();
-    Command::new("git")
-        .arg("init")
-        .arg("-q")
-        .current_dir(&repo)
-        .output()
-        .unwrap();
+    Command::new("git").arg("init").arg("-q").current_dir(&repo).output().unwrap();
     let git_dir = repo.join(".git");
     fs::remove_dir_all(&git_dir).unwrap();
     fs::write(&git_dir, "gitdir: /tmp/worktree\n").unwrap();
@@ -314,17 +243,9 @@ fn list_detects_git_file_marker_like_ghq() {
         .output()
         .unwrap();
 
-    let ghq_out = Command::new(&ghq)
-        .arg("list")
-        .envs(env.iter().cloned())
-        .output()
-        .unwrap();
-    let scap_out = ScapCmd::cargo_bin("scap")
-        .unwrap()
-        .arg("list")
-        .envs(env.iter().cloned())
-        .output()
-        .unwrap();
+    let ghq_out = Command::new(&ghq).arg("list").envs(env.iter().cloned()).output().unwrap();
+    let scap_out =
+        ScapCmd::cargo_bin("scap").unwrap().arg("list").envs(env.iter().cloned()).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&ghq_out.stdout),
         String::from_utf8_lossy(&scap_out.stdout),
@@ -334,12 +255,7 @@ fn list_detects_git_file_marker_like_ghq() {
 
 fn init_repo_at(path: &std::path::Path) {
     std::fs::create_dir_all(path).unwrap();
-    Command::new("git")
-        .arg("init")
-        .arg("-q")
-        .current_dir(path)
-        .output()
-        .unwrap();
+    Command::new("git").arg("init").arg("-q").current_dir(path).output().unwrap();
 }
 
 fn init_repo_with_gitfile(path: &std::path::Path) {
@@ -384,11 +300,7 @@ fn list_matches_ghq_on_edge_fixtures() {
         let root_ghq = TempDir::new().unwrap();
         setup(root_ghq.path());
         let env = isolated(home.path(), root_ghq.path());
-        let ghq_out = Command::new(&ghq)
-            .arg("list")
-            .envs(env.iter().cloned())
-            .output()
-            .unwrap();
+        let ghq_out = Command::new(&ghq).arg("list").envs(env.iter().cloned()).output().unwrap();
 
         let root_scap = TempDir::new().unwrap();
         setup(root_scap.path());
@@ -423,17 +335,9 @@ fn list_matches_ghq_with_symlinked_repo() {
     std::fs::create_dir_all(link.parent().unwrap()).unwrap();
     symlink(&real, &link).unwrap();
     let env = isolated(home.path(), root.path());
-    let ghq_out = Command::new(&ghq)
-        .arg("list")
-        .envs(env.iter().cloned())
-        .output()
-        .unwrap();
-    let scap_out = ScapCmd::cargo_bin("scap")
-        .unwrap()
-        .arg("list")
-        .envs(env.iter().cloned())
-        .output()
-        .unwrap();
+    let ghq_out = Command::new(&ghq).arg("list").envs(env.iter().cloned()).output().unwrap();
+    let scap_out =
+        ScapCmd::cargo_bin("scap").unwrap().arg("list").envs(env.iter().cloned()).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&ghq_out.stdout),
         String::from_utf8_lossy(&scap_out.stdout),
@@ -452,25 +356,12 @@ fn list_prunes_nested_repo_matches_ghq() {
     for rel in ["github.com/a/x", "github.com/a/x/sub/inner"] {
         let p = root.path().join(rel);
         std::fs::create_dir_all(&p).unwrap();
-        Command::new("git")
-            .arg("init")
-            .arg("-q")
-            .current_dir(&p)
-            .output()
-            .unwrap();
+        Command::new("git").arg("init").arg("-q").current_dir(&p).output().unwrap();
     }
 
-    let ghq_out = Command::new(&ghq)
-        .arg("list")
-        .envs(env.iter().cloned())
-        .output()
-        .unwrap();
-    let scap_out = ScapCmd::cargo_bin("scap")
-        .unwrap()
-        .arg("list")
-        .envs(env.iter().cloned())
-        .output()
-        .unwrap();
+    let ghq_out = Command::new(&ghq).arg("list").envs(env.iter().cloned()).output().unwrap();
+    let scap_out =
+        ScapCmd::cargo_bin("scap").unwrap().arg("list").envs(env.iter().cloned()).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&ghq_out.stdout),
         String::from_utf8_lossy(&scap_out.stdout),

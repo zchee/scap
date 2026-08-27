@@ -31,11 +31,7 @@ fn init_bare_origin() -> TempDir {
 fn init_origin_with_commit() -> (TempDir, TempDir) {
     let origin = init_bare_origin();
     let work = TempDir::new().unwrap();
-    Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(work.path())
-        .status()
-        .unwrap();
+    Command::new("git").args(["init", "-q"]).current_dir(work.path()).status().unwrap();
     Command::new("git")
         .args(["config", "user.email", "test@example.com"])
         .current_dir(work.path())
@@ -47,28 +43,15 @@ fn init_origin_with_commit() -> (TempDir, TempDir) {
         .status()
         .unwrap();
     fs::write(work.path().join("README.md"), b"hello\n").unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(work.path())
-        .status()
-        .unwrap();
+    Command::new("git").args(["add", "."]).current_dir(work.path()).status().unwrap();
     Command::new("git")
         .args(["-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"])
         .current_dir(work.path())
         .status()
         .unwrap();
+    Command::new("git").args(["branch", "-M", "main"]).current_dir(work.path()).status().unwrap();
     Command::new("git")
-        .args(["branch", "-M", "main"])
-        .current_dir(work.path())
-        .status()
-        .unwrap();
-    Command::new("git")
-        .args([
-            "remote",
-            "add",
-            "origin",
-            &format!("file://{}", origin.path().display()),
-        ])
+        .args(["remote", "add", "origin", &format!("file://{}", origin.path().display())])
         .current_dir(work.path())
         .status()
         .unwrap();
@@ -103,9 +86,7 @@ fn get_fresh_clone_creates_working_dir() {
 
     let mut cmd = AssertCommand::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.args(["get", &format!("file://{}", origin.path().display())])
-        .assert()
-        .success();
+    cmd.args(["get", &format!("file://{}", origin.path().display())]).assert().success();
 
     let dest = scap_dest_for(root.path(), origin.path(), false);
     assert!(dest.join(".git").is_dir(), "git dir at {}", dest.display());
@@ -168,11 +149,7 @@ fn get_update_with_upstream_pulls_ff_only() {
     cmd.args(["get", &url]).assert().success();
 
     fs::write(work.path().join("NEW.md"), b"second\n").unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(work.path())
-        .status()
-        .unwrap();
+    Command::new("git").args(["add", "."]).current_dir(work.path()).status().unwrap();
     Command::new("git")
         .args(["-c", "commit.gpgsign=false", "commit", "-q", "-m", "second"])
         .current_dir(work.path())
@@ -206,10 +183,7 @@ fn get_bare_clone_creates_bare_dir() {
 
     let dest = scap_dest_for(root.path(), origin.path(), true);
     assert!(
-        dest.file_name()
-            .unwrap()
-            .to_string_lossy()
-            .ends_with(".git"),
+        dest.file_name().unwrap().to_string_lossy().ends_with(".git"),
         "dest should end in .git: {}",
         dest.display()
     );
@@ -228,11 +202,7 @@ fn get_bare_update_uses_fetch_refspec() {
     cmd.args(["get", "--bare", &url]).assert().success();
 
     fs::write(work.path().join("NEW.md"), b"second\n").unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(work.path())
-        .status()
-        .unwrap();
+    Command::new("git").args(["add", "."]).current_dir(work.path()).status().unwrap();
     Command::new("git")
         .args(["-c", "commit.gpgsign=false", "commit", "-q", "-m", "second"])
         .current_dir(work.path())
@@ -279,20 +249,9 @@ fn get_branch_clones_specified_branch() {
         .status()
         .unwrap();
     fs::write(work.path().join("BRANCH.md"), b"feature\n").unwrap();
+    Command::new("git").args(["add", "."]).current_dir(work.path()).status().unwrap();
     Command::new("git")
-        .args(["add", "."])
-        .current_dir(work.path())
-        .status()
-        .unwrap();
-    Command::new("git")
-        .args([
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-q",
-            "-m",
-            "feature",
-        ])
+        .args(["-c", "commit.gpgsign=false", "commit", "-q", "-m", "feature"])
         .current_dir(work.path())
         .status()
         .unwrap();
@@ -305,9 +264,7 @@ fn get_branch_clones_specified_branch() {
     let url = format!("file://{}", origin.path().display());
     let mut cmd = AssertCommand::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.args(["get", "--branch", "feature", &url])
-        .assert()
-        .success();
+    cmd.args(["get", "--branch", "feature", &url]).assert().success();
 
     let dest = scap_dest_for(root.path(), origin.path(), false);
     assert!(dest.join("BRANCH.md").exists(), "feature file missing");
@@ -341,12 +298,8 @@ fn get_concurrent_clone_exits_75() {
     fs::create_dir_all(lock_dir).unwrap();
     let name = dest.file_name().unwrap().to_string_lossy().into_owned();
     let lock_path = lock_dir.join(format!(".scap-lock-{name}"));
-    let lock_file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .unwrap();
+    let lock_file =
+        fs::OpenOptions::new().create(true).write(true).truncate(false).open(&lock_path).unwrap();
     FileExt::lock_exclusive(&lock_file).unwrap();
 
     let mut cmd = AssertCommand::cargo_bin("scap").unwrap();
@@ -379,11 +332,7 @@ fn get_atomic_clone_cleans_stale_tmp() {
     isolated(&mut cmd, home.path(), root.path());
     cmd.args(["get", &url]).assert().success();
 
-    assert!(
-        !stale_tmp.exists(),
-        "stale tmp dir was not cleaned: {}",
-        stale_tmp.display()
-    );
+    assert!(!stale_tmp.exists(), "stale tmp dir was not cleaned: {}", stale_tmp.display());
     assert!(dest.join(".git").is_dir(), "clone did not complete");
 }
 
@@ -409,11 +358,7 @@ fn get_parallel_via_stdin_clones_multiple() {
 
     for o in [&o1, &o2, &o3] {
         let dest = scap_dest_for(root.path(), o.path(), false);
-        assert!(
-            dest.join(".git").is_dir(),
-            "clone missing for {}",
-            o.path().display()
-        );
+        assert!(dest.join(".git").is_dir(), "clone missing for {}", o.path().display());
     }
 }
 
@@ -426,14 +371,8 @@ fn get_look_exports_scap_look_env() {
 
     let probe = home.path().join("probe.sh");
     let stamp = home.path().join("captured");
-    fs::write(
-        &probe,
-        format!(
-            "#!/bin/sh\nprintf '%s' \"$SCAP_LOOK\" > {}\n",
-            stamp.display()
-        ),
-    )
-    .unwrap();
+    fs::write(&probe, format!("#!/bin/sh\nprintf '%s' \"$SCAP_LOOK\" > {}\n", stamp.display()))
+        .unwrap();
     let mut perms = fs::metadata(&probe).unwrap().permissions();
     use std::os::unix::fs::PermissionsExt;
     perms.set_mode(0o755);
@@ -441,16 +380,10 @@ fn get_look_exports_scap_look_env() {
 
     let mut cmd = AssertCommand::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.env("SHELL", &probe)
-        .args(["get", "--look", "--silent", &url])
-        .assert()
-        .success();
+    cmd.env("SHELL", &probe).args(["get", "--look", "--silent", &url]).assert().success();
 
     let captured = fs::read_to_string(&stamp).unwrap();
-    assert!(
-        captured.contains("/"),
-        "SCAP_LOOK should be host/owner/name; got {captured:?}"
-    );
+    assert!(captured.contains("/"), "SCAP_LOOK should be host/owner/name; got {captured:?}");
 }
 
 #[test]

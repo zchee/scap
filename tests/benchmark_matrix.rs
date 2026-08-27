@@ -1,13 +1,12 @@
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
 use tempfile::TempDir;
-
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 
 fn write_fake_binary(path: &Path, version_text: &str) -> io::Result<()> {
     let mut f = File::create(path)?;
@@ -33,11 +32,7 @@ fn write_fake_binary(path: &Path, version_text: &str) -> io::Result<()> {
 fn benchmark_matrix_script_generates_matrix_artifacts_in_dry_run() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let script = repo_root.join("scripts/bench-list-matrix.sh");
-    assert!(
-        script.exists(),
-        "bench script should exist: {}",
-        script.display()
-    );
+    assert!(script.exists(), "bench script should exist: {}", script.display());
 
     let workspace = TempDir::new().unwrap();
     let fake_bin = workspace.path().join("bin");
@@ -51,9 +46,7 @@ fn benchmark_matrix_script_generates_matrix_artifacts_in_dry_run() {
     let real_b = TempDir::new().unwrap();
 
     let run_id = "task1-dryrun-matrix";
-    let output_root = repo_root
-        .join(".omx/assets/scap-list-oss-fastest")
-        .join(run_id);
+    let output_root = repo_root.join(".omx/assets/scap-list-oss-fastest").join(run_id);
     let _ = fs::remove_dir_all(&output_root);
 
     let original_path = env::var("PATH").unwrap_or_default();
@@ -64,10 +57,7 @@ fn benchmark_matrix_script_generates_matrix_artifacts_in_dry_run() {
         .env("PATH", path)
         .env("SCAP_BENCH_DRY_RUN", "1")
         .env("SCAP_BENCH_RUN_ID", run_id)
-        .env(
-            "SCAP_BENCH_ROOTS",
-            format!("{}:{}", real_a.path().display(), real_b.path().display()),
-        )
+        .env("SCAP_BENCH_ROOTS", format!("{}:{}", real_a.path().display(), real_b.path().display()))
         .env("SCAP_BENCH_SYNTH_HOSTS", "1")
         .env("SCAP_BENCH_SYNTH_USERS", "1")
         .env("SCAP_BENCH_SYNTH_REPOS", "1")
@@ -93,10 +83,7 @@ fn benchmark_matrix_script_generates_matrix_artifacts_in_dry_run() {
         metadata_body.contains(&format!("\"run_id\": \"{}\"", run_id)),
         "metadata must include run id"
     );
-    assert!(
-        metadata_body.contains("\"runs\": 20"),
-        "metadata must include hyperfine run count"
-    );
+    assert!(metadata_body.contains("\"runs\": 20"), "metadata must include hyperfine run count");
 
     let expected_artifacts = [
         "metadata.json",
@@ -129,11 +116,7 @@ fn benchmark_matrix_script_generates_matrix_artifacts_in_dry_run() {
         "synthetic/scap-sort.json",
     ] {
         let artifact = output_root.join(rel);
-        assert!(
-            artifact.exists(),
-            "missing artifact json: {}",
-            artifact.display()
-        );
+        assert!(artifact.exists(), "missing artifact json: {}", artifact.display());
         let body = fs::read_to_string(artifact).unwrap();
         assert!(
             body.contains("\"command\": "),
@@ -173,10 +156,8 @@ fn benchmark_matrix_script_generates_matrix_artifacts_in_dry_run() {
     );
 
     assert!(
-        summary.contains(&format!(
-            "Real-row commands use SCAP_ROOT={}",
-            real_a.path().display(),
-        )) && summary.contains(&format!(":{}", real_b.path().display()))
+        summary.contains(&format!("Real-row commands use SCAP_ROOT={}", real_a.path().display(),))
+            && summary.contains(&format!(":{}", real_b.path().display()))
             || summary.contains(&format!(
                 "Real-row commands use SCAP_ROOT=\"{}:{}\"",
                 real_a.path().display(),

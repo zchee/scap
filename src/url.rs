@@ -49,11 +49,9 @@ pub fn from_input(
         return from_bare(&original_input, &normalized.value, scap_user, complete_user);
     }
 
-    let parsed =
-        gix_url::parse(normalized.value.as_bytes().as_bstr()).map_err(|e| UrlError::Malformed {
-            input: original_input.clone(),
-            reason: e.to_string(),
-        })?;
+    let parsed = gix_url::parse(normalized.value.as_bytes().as_bstr()).map_err(|e| {
+        UrlError::Malformed { input: original_input.clone(), reason: e.to_string() }
+    })?;
 
     let host = match parsed.host() {
         Some(h) => h.to_ascii_lowercase(),
@@ -82,15 +80,7 @@ pub fn from_input(
     let https_url = format!("https://{host}/{owner}/{name}");
     let ssh_url = format!("ssh://{ssh_user}@{host}/{owner}/{name}");
 
-    Ok(Repo {
-        host,
-        owner,
-        name,
-        vcs_hint,
-        https_url,
-        ssh_url,
-        original_input,
-    })
+    Ok(Repo { host, owner, name, vcs_hint, https_url, ssh_url, original_input })
 }
 
 fn detect_vcs(scheme: &gix_url::Scheme, host: &str) -> Option<String> {
@@ -144,10 +134,7 @@ enum NormalizedKind {
 
 fn normalize_to_parseable(input: &str) -> Result<Normalized, UrlError> {
     if has_scheme(input) {
-        return Ok(Normalized {
-            value: input.to_owned(),
-            kind: NormalizedKind::HasScheme,
-        });
+        return Ok(Normalized { value: input.to_owned(), kind: NormalizedKind::HasScheme });
     }
     if let Some((user, host, path)) = parse_scp_like(input) {
         let user_prefix = match user {
@@ -167,10 +154,7 @@ fn normalize_to_parseable(input: &str) -> Result<Normalized, UrlError> {
             kind: NormalizedKind::HostBare,
         });
     }
-    Ok(Normalized {
-        value: input.to_owned(),
-        kind: NormalizedKind::Bare,
-    })
+    Ok(Normalized { value: input.to_owned(), kind: NormalizedKind::Bare })
 }
 
 fn has_scheme(s: &str) -> bool {
@@ -241,9 +225,8 @@ fn from_bare(
         1 => {
             let project = segments[0];
             let (owner, name) = if complete_user {
-                let user = scap_user.ok_or_else(|| UrlError::UnknownUser {
-                    input: original.to_owned(),
-                })?;
+                let user = scap_user
+                    .ok_or_else(|| UrlError::UnknownUser { input: original.to_owned() })?;
                 (user.to_owned(), project.to_owned())
             } else {
                 (project.to_owned(), project.to_owned())
@@ -779,30 +762,16 @@ mod tests {
         assert_eq!(r.https_url, "https://github.com/motemen/pusheen-explorer");
         assert_eq!(r.ssh_url, "ssh://git@github.com/motemen/pusheen-explorer");
 
-        let r2 = from_input(
-            "https://motemen@ghe.example.com/motemen/pusheen-explorer",
-            None,
-            false,
-        )
-        .unwrap();
-        assert_eq!(
-            r2.https_url,
-            "https://ghe.example.com/motemen/pusheen-explorer"
-        );
-        assert_eq!(
-            r2.ssh_url,
-            "ssh://motemen@ghe.example.com/motemen/pusheen-explorer"
-        );
+        let r2 =
+            from_input("https://motemen@ghe.example.com/motemen/pusheen-explorer", None, false)
+                .unwrap();
+        assert_eq!(r2.https_url, "https://ghe.example.com/motemen/pusheen-explorer");
+        assert_eq!(r2.ssh_url, "ssh://motemen@ghe.example.com/motemen/pusheen-explorer");
     }
 
     #[test]
     fn parses_codecommit_urls() {
-        let r = from_input(
-            "codecommit::us-east-1://example-profile@my-repo",
-            None,
-            false,
-        )
-        .unwrap();
+        let r = from_input("codecommit::us-east-1://example-profile@my-repo", None, false).unwrap();
         assert_eq!(r.host, "us-east-1");
         assert_eq!(r.owner, "example-profile");
         assert_eq!(r.name, "my-repo");
@@ -815,14 +784,8 @@ mod tests {
 
     #[test]
     fn rejects_path_traversal() {
-        assert!(matches!(
-            from_input("../foo/bar", None, false),
-            Err(UrlError::PathTraversal(_))
-        ));
-        assert!(matches!(
-            from_input("foo/../bar", None, false),
-            Err(UrlError::PathTraversal(_))
-        ));
+        assert!(matches!(from_input("../foo/bar", None, false), Err(UrlError::PathTraversal(_))));
+        assert!(matches!(from_input("foo/../bar", None, false), Err(UrlError::PathTraversal(_))));
         assert!(matches!(
             from_input("https://github.com/../etc/passwd", None, false),
             Err(UrlError::PathTraversal(_))
@@ -846,9 +809,6 @@ mod tests {
     #[test]
     fn preserves_original_input() {
         let r = from_input("git@github.com:motemen/pusheen-explorer.git", None, false).unwrap();
-        assert_eq!(
-            r.original_input,
-            "git@github.com:motemen/pusheen-explorer.git"
-        );
+        assert_eq!(r.original_input, "git@github.com:motemen/pusheen-explorer.git");
     }
 }

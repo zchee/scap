@@ -6,10 +6,8 @@ use anyhow::{Context, bail};
 use fs2::FileExt;
 
 use crate::cli::GetArgs;
-use crate::config;
-use crate::path as scap_path;
-use crate::url;
 use crate::vcs::git;
+use crate::{config, path as scap_path, url};
 
 const PARALLEL_WORKERS: usize = 6;
 const EX_TEMPFAIL: i32 = 75;

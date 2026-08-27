@@ -25,10 +25,7 @@ pub fn run(args: &CreateArgs) -> anyhow::Result<()> {
 
     if !super::is_not_exist_or_empty(&dest)? {
         // ghq cmd_create.go:42
-        bail!(
-            "directory \"{}\" already exists and not empty",
-            dest.display()
-        );
+        bail!("directory \"{}\" already exists and not empty", dest.display());
     }
 
     fs::create_dir_all(&dest).with_context(|| format!("mkdir -p {}", dest.display()))?;
@@ -44,10 +41,7 @@ fn validate_vcs(vcs: Option<&str>) -> anyhow::Result<()> {
         return Ok(());
     }
     // ADR-2 intentional-divergence: ghq supports svn/hg/darcs/fossil/bzr.
-    bail!(
-        "unsupported VCS: \"{}\" (v1 supports git only; see issue tracker for non-git)",
-        v
-    );
+    bail!("unsupported VCS: \"{}\" (v1 supports git only; see issue tracker for non-git)", v);
 }
 
 // ghq cmdutil/run.go RunInDir: the child's stdout is routed to our stderr,
@@ -60,15 +54,10 @@ fn git_init(dest: &Path, bare: bool) -> anyhow::Result<()> {
     if bare {
         cmd.arg("--bare");
     }
-    let stderr_dup = std::io::stderr()
-        .as_fd()
-        .try_clone_to_owned()
-        .context("dup stderr fd")?;
+    let stderr_dup = std::io::stderr().as_fd().try_clone_to_owned().context("dup stderr fd")?;
     cmd.stdout(stderr_dup);
 
-    let status = cmd
-        .status()
-        .with_context(|| format!("spawn git init in {}", dest.display()))?;
+    let status = cmd.status().with_context(|| format!("spawn git init in {}", dest.display()))?;
     if !status.success() {
         bail!("git init exited with {}", status);
     }

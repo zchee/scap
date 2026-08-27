@@ -9,11 +9,7 @@ pub enum ConfigError {
     #[error("failed to invoke `git`: {0}")]
     GitSpawn(#[from] std::io::Error),
     #[error("git config {key:?} failed (status {status}): {stderr}")]
-    GitConfigFailed {
-        key: String,
-        status: i32,
-        stderr: String,
-    },
+    GitConfigFailed { key: String, status: i32, stderr: String },
     #[error("could not determine home directory")]
     NoHomeDir,
     #[error("invalid output from `git config --get-regexp`: {0:?}")]
@@ -147,11 +143,7 @@ fn run_git_config(args: &[&str]) -> Result<Option<String>, ConfigError> {
         Some(0) => {
             let stdout = String::from_utf8(output.stdout).map_err(|_| ConfigError::InvalidUtf8)?;
             let trimmed = stdout.trim_end_matches('\n');
-            if trimmed.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(trimmed.to_owned()))
-            }
+            if trimmed.is_empty() { Ok(None) } else { Ok(Some(trimmed.to_owned())) }
         }
         Some(1) => Ok(None),
         Some(status) => Err(ConfigError::GitConfigFailed {
@@ -201,21 +193,19 @@ fn clean_path(p: &std::path::Path) -> PathBuf {
             other => out.push(other.as_os_str()),
         }
     }
-    if out.as_os_str().is_empty() {
-        PathBuf::from(".")
-    } else {
-        out
-    }
+    if out.as_os_str().is_empty() { PathBuf::from(".") } else { out }
 }
 
 #[cfg(test)]
 #[allow(unsafe_code)]
 mod tests {
-    use super::*;
-    use serial_test::serial;
     use std::io::Write;
     use std::path::Path;
+
+    use serial_test::serial;
     use tempfile::TempDir;
+
+    use super::*;
 
     struct EnvGuard {
         keys: Vec<(&'static str, Option<std::ffi::OsString>)>,
@@ -253,10 +243,7 @@ mod tests {
             .expect("write gitconfig");
 
         let saved = vec![
-            (
-                "GIT_CONFIG_NOSYSTEM",
-                std::env::var_os("GIT_CONFIG_NOSYSTEM"),
-            ),
+            ("GIT_CONFIG_NOSYSTEM", std::env::var_os("GIT_CONFIG_NOSYSTEM")),
             ("GIT_CONFIG_GLOBAL", std::env::var_os("GIT_CONFIG_GLOBAL")),
             ("SCAP_ROOT", std::env::var_os("SCAP_ROOT")),
             ("HOME", std::env::var_os("HOME")),
@@ -269,10 +256,7 @@ mod tests {
         set_env("HOME", tmp.path());
         set_env("XDG_CONFIG_HOME", tmp.path().join("xdg"));
 
-        EnvGuard {
-            keys: saved,
-            _tmp: tmp,
-        }
+        EnvGuard { keys: saved, _tmp: tmp }
     }
 
     fn pb(s: &str) -> PathBuf {
@@ -340,9 +324,10 @@ mod tests {
     #[test]
     #[serial]
     fn root_for_url_consults_urlmatch_first() {
-        let _g = setup(
-            "[scap]\n\troot = /default\n[scap \"https://special.example.com/\"]\n\troot = /special\n",
-        );
+        let _g = setup(concat!(
+            "[scap]\n\troot = /default\n",
+            "[scap \"https://special.example.com/\"]\n\troot = /special\n",
+        ));
         let special = root_for_url("https://special.example.com/foo/bar").unwrap();
         assert_eq!(special, pb("/special"));
         let other = root_for_url("https://other.example.com/foo/bar").unwrap();

@@ -61,16 +61,9 @@ fn is_bare(dir: &Path) -> bool {
 #[test]
 fn create_makes_fresh_directory_with_git_init() {
     let env = Env::new();
-    env.scap()
-        .args(["create", "motemen/ghq"])
-        .assert()
-        .success();
+    env.scap().args(["create", "motemen/ghq"]).assert().success();
     let dest = expected_dest(&env, "github.com", "motemen", "ghq", false);
-    assert!(
-        dest.join(".git").is_dir(),
-        "{} should have .git/",
-        dest.display()
-    );
+    assert!(dest.join(".git").is_dir(), "{} should have .git/", dest.display());
     assert!(!is_bare(&dest), "should not be bare");
 }
 
@@ -79,10 +72,7 @@ fn create_accepts_pre_existing_empty_directory() {
     let env = Env::new();
     let dest = expected_dest(&env, "github.com", "motemen", "ghq", false);
     fs::create_dir_all(&dest).unwrap();
-    env.scap()
-        .args(["create", "motemen/ghq"])
-        .assert()
-        .success();
+    env.scap().args(["create", "motemen/ghq"]).assert().success();
     assert!(dest.join(".git").is_dir());
 }
 
@@ -93,10 +83,7 @@ fn create_rejects_pre_existing_non_empty_directory() {
     fs::create_dir_all(&dest).unwrap();
     fs::write(dest.join("README.md"), "hi").unwrap();
 
-    let expected_msg = format!(
-        "directory \"{}\" already exists and not empty",
-        dest.display()
-    );
+    let expected_msg = format!("directory \"{}\" already exists and not empty", dest.display());
     env.scap()
         .args(["create", "motemen/ghq"])
         .assert()
@@ -107,26 +94,16 @@ fn create_rejects_pre_existing_non_empty_directory() {
 #[test]
 fn create_bare_produces_bare_repo_with_git_suffix() {
     let env = Env::new();
-    env.scap()
-        .args(["create", "--bare", "motemen/ghq"])
-        .assert()
-        .success();
+    env.scap().args(["create", "--bare", "motemen/ghq"]).assert().success();
     let dest = expected_dest(&env, "github.com", "motemen", "ghq", true);
-    assert!(
-        dest.to_string_lossy().ends_with(".git"),
-        "{} should end in .git",
-        dest.display()
-    );
+    assert!(dest.to_string_lossy().ends_with(".git"), "{} should end in .git", dest.display());
     assert!(is_bare(&dest), "{} should be bare", dest.display());
 }
 
 #[test]
 fn create_vcs_git_alias_accepted() {
     let env = Env::new();
-    env.scap()
-        .args(["create", "--vcs", "git", "motemen/ghq"])
-        .assert()
-        .success();
+    env.scap().args(["create", "--vcs", "git", "motemen/ghq"]).assert().success();
     let dest = expected_dest(&env, "github.com", "motemen", "ghq", false);
     assert!(dest.join(".git").is_dir());
 }

@@ -50,19 +50,13 @@ impl DiscoveredRepo {
 
     // ghq local_repository.go:NonHostPath — path without the leading host segment.
     fn non_host_path(&self) -> String {
-        if self.rel_parts.len() <= 1 {
-            String::new()
-        } else {
-            self.rel_parts[1..].join("/")
-        }
+        if self.rel_parts.len() <= 1 { String::new() } else { self.rel_parts[1..].join("/") }
     }
 
     // ghq local_repository.go:Subpaths — tails of the relative path, shortest first.
     fn subpaths(&self) -> Vec<String> {
         let n = self.rel_parts.len();
-        (0..n)
-            .map(|i| self.rel_parts[n - (i + 1)..].join("/"))
-            .collect()
+        (0..n).map(|i| self.rel_parts[n - (i + 1)..].join("/")).collect()
     }
 
     fn matches_exact(&self, query: &str) -> bool {
@@ -94,10 +88,7 @@ pub fn run(args: &ListArgs) -> anyhow::Result<()> {
     let lines = if args.unique {
         format_unique(&repos)
     } else if args.full_path {
-        repos
-            .iter()
-            .map(|r| r.full_path.display().to_string())
-            .collect::<Vec<_>>()
+        repos.iter().map(|r| r.full_path.display().to_string()).collect::<Vec<_>>()
     } else {
         repos.iter().map(|r| r.rel_path()).collect::<Vec<_>>()
     };
@@ -182,12 +173,7 @@ fn maybe_push_repo(
     if let Some(rel_parts) = rel_parts(root, &full_path) {
         let is_under_primary = primary.map(|p| full_path.starts_with(p)).unwrap_or(false);
         let rel_path = rel_parts.join("/");
-        out.push(DiscoveredRepo {
-            full_path,
-            rel_path,
-            rel_parts,
-            is_under_primary,
-        });
+        out.push(DiscoveredRepo { full_path, rel_path, rel_parts, is_under_primary });
     }
 }
 
@@ -200,11 +186,7 @@ fn is_repo_dir_entry(entry: &DirEntry<((), bool)>) -> bool {
 }
 
 fn is_repo_path(path: &Path) -> bool {
-    if path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|name| name.ends_with(".git"))
-    {
+    if path.file_name().and_then(|n| n.to_str()).is_some_and(|name| name.ends_with(".git")) {
         return true;
     }
 
@@ -213,9 +195,7 @@ fn is_repo_path(path: &Path) -> bool {
 
 fn normalize_repo_root(path: PathBuf) -> PathBuf {
     if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
-        return path
-            .parent()
-            .map_or_else(|| path.clone(), |p| p.to_path_buf());
+        return path.parent().map_or_else(|| path.clone(), |p| p.to_path_buf());
     }
 
     path
@@ -228,11 +208,7 @@ fn rel_parts(root: &Path, full: &Path) -> Option<Vec<String>> {
         .filter_map(|c| c.as_os_str().to_str().map(|s| s.to_owned()))
         .filter(|s| !s.is_empty())
         .collect();
-    if parts.is_empty() {
-        Some(vec![".".to_owned()])
-    } else {
-        Some(parts)
-    }
+    if parts.is_empty() { Some(vec![".".to_owned()]) } else { Some(parts) }
 }
 
 fn filter_repos(repos: Vec<DiscoveredRepo>, args: &ListArgs) -> Vec<DiscoveredRepo> {
@@ -241,10 +217,7 @@ fn filter_repos(repos: Vec<DiscoveredRepo>, args: &ListArgs) -> Vec<DiscoveredRe
     };
 
     if args.exact {
-        repos
-            .into_iter()
-            .filter(|r| r.matches_exact(query))
-            .collect()
+        repos.into_iter().filter(|r| r.matches_exact(query)).collect()
     } else {
         let (host_filter, q) = split_authority_prefix(query);
         let lower = q.to_lowercase();
@@ -259,11 +232,7 @@ fn filter_repos(repos: Vec<DiscoveredRepo>, args: &ListArgs) -> Vec<DiscoveredRe
                 }
 
                 let hay = r.non_host_path();
-                if smart_case {
-                    hay.to_lowercase().contains(&lower)
-                } else {
-                    hay.contains(&q)
-                }
+                if smart_case { hay.to_lowercase().contains(&lower) } else { hay.contains(&q) }
             })
             .collect()
     }

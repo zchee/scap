@@ -27,11 +27,7 @@ fn clone_is_alias_for_get() {
 
 #[test]
 fn get_help_lists_documented_flags() {
-    let assert = Command::cargo_bin("scap")
-        .unwrap()
-        .args(["get", "--help"])
-        .assert()
-        .success();
+    let assert = Command::cargo_bin("scap").unwrap().args(["get", "--help"]).assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     for flag in [
         "--update",
@@ -44,36 +40,22 @@ fn get_help_lists_documented_flags() {
         "--silent",
         "--no-recursive",
     ] {
-        assert!(
-            stdout.contains(flag),
-            "scap get --help missing flag: {flag}"
-        );
+        assert!(stdout.contains(flag), "scap get --help missing flag: {flag}");
     }
 }
 
 #[test]
 fn list_help_lists_documented_flags() {
-    let assert = Command::cargo_bin("scap")
-        .unwrap()
-        .args(["list", "--help"])
-        .assert()
-        .success();
+    let assert = Command::cargo_bin("scap").unwrap().args(["list", "--help"]).assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     for flag in ["--exact", "--full-path", "--unique", "--bare", "--vcs"] {
-        assert!(
-            stdout.contains(flag),
-            "scap list --help missing flag: {flag}"
-        );
+        assert!(stdout.contains(flag), "scap list --help missing flag: {flag}");
     }
 }
 
 #[test]
 fn rm_help_lists_documented_flags() {
-    let assert = Command::cargo_bin("scap")
-        .unwrap()
-        .args(["rm", "--help"])
-        .assert()
-        .success();
+    let assert = Command::cargo_bin("scap").unwrap().args(["rm", "--help"]).assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     for flag in ["--dry-run", "--bare"] {
         assert!(stdout.contains(flag), "scap rm --help missing flag: {flag}");
@@ -82,27 +64,16 @@ fn rm_help_lists_documented_flags() {
 
 #[test]
 fn create_help_lists_documented_flags() {
-    let assert = Command::cargo_bin("scap")
-        .unwrap()
-        .args(["create", "--help"])
-        .assert()
-        .success();
+    let assert = Command::cargo_bin("scap").unwrap().args(["create", "--help"]).assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     for flag in ["--vcs", "--bare"] {
-        assert!(
-            stdout.contains(flag),
-            "scap create --help missing flag: {flag}"
-        );
+        assert!(stdout.contains(flag), "scap create --help missing flag: {flag}");
     }
 }
 
 #[test]
 fn root_help_lists_documented_flags() {
-    let assert = Command::cargo_bin("scap")
-        .unwrap()
-        .args(["root", "--help"])
-        .assert()
-        .success();
+    let assert = Command::cargo_bin("scap").unwrap().args(["root", "--help"]).assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("--all"), "scap root --help missing --all");
 }
