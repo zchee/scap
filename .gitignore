@@ -19,3 +19,7 @@ target
 
 # rustc will dump stack traces when hitting an internal compiler error to PWD
 rustc-ice-*.txt
+
+# Local agent/benchmark artifacts (kept on disk, not tracked)
+.omx/
+.codex/
