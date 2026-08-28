@@ -4,7 +4,8 @@ A Rust port of [x-motemen/ghq](https://github.com/x-motemen/ghq).
 
 scap manages local clones of remote git repositories under a structured root path (`<root>/<host>/<owner>/<repo>`). It mirrors ghq 1.8.0's user-facing surface — subcommands, flags, config keys, and exit semantics — within the git-only subset (v1).
 
-> Like [General Headquarters][ghq], but for the [Supreme Commander for the Allied Powers][scap-wiki]. (jargon, joke :P)
+> [!NOTE]
+> Like [G eneral H ead Q uarters][ghq], but for the [S upreme C ommander for the A llied P owers][scap-wiki]. (jargon, joke :P)
 
 ## Install
 
