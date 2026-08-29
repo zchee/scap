@@ -75,6 +75,20 @@ cargo test --all-features
 
 Parity-check skill at `.agents/skills/ghq-parity-check/SKILL.md` runs before adding or renaming any CLI surface element.
 
+## Benchmarks
+
+Two harnesses measure different things and are not comparable to each other. The hyperfine harness under `docs/benchmarks/` is the optimization plan's gate: whole-process wall-clock runs on a quiet machine under a fixed `RUSTFLAGS` regime, used to accept or reject a change against a frozen threshold. [CodSpeed](https://codspeed.io) is the per-commit history: the divan micro-benchmarks in `benches/` run under its deterministic CPU simulation, which is stable enough for shared CI runners, and the whole-program targets in `codspeed.yaml` run under its walltime instrument, which needs dedicated hardware and is therefore opt-in. CI builds with clean flags, so a CodSpeed number and a `docs/benchmarks/` number will not agree even for the same command.
+
+Locally:
+
+```sh
+cargo bench                        # plain divan tables, no CodSpeed involved
+cargo codspeed build -m simulation # compile the same benches instrumented
+scripts/bench-fixture.sh           # generate target/bench-fixture for codspeed.yaml
+```
+
+Simulation mode is Linux-only, so on macOS the local check is that the benches build and run as plain divan; the instrumented numbers come from CI. Two things have to be done by hand before CodSpeed reports anything: enable `zchee/scap` on codspeed.io, and add the `CODSPEED_TOKEN` repository secret it hands back. Uploading a run from a developer machine additionally needs `codspeed auth login`.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

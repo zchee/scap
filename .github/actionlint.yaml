@@ -1,0 +1,7 @@
+# actionlint cannot know about runner labels GitHub does not host itself.
+# `codspeed-macro` is CodSpeed's dedicated macro runner, which the walltime
+# job in workflows/codspeed.yaml needs because real-time measurements on a
+# shared runner are noise.
+self-hosted-runner:
+  labels:
+    - codspeed-macro

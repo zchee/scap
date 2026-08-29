@@ -37,6 +37,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], defaul
 
 [dev-dependencies]
 assert_cmd = "2"
+# The CodSpeed compatibility shim for divan, renamed so the benches spell
+# `divan::` and stay runnable as plain divan. Uninstrumented -- `cargo bench`
+# on a developer machine -- it re-exports divan 0.1 unchanged; under
+# `cargo codspeed build` it swaps in the instrumented harness. Plain `divan`
+# is deliberately NOT also a dependency: the two would fight over the
+# `[[bench]]` targets' `main`.
+divan = { package = "codspeed-divan-compat", version = "5.0" }
 predicates = { version = "3", default-features = false }
 # Only the W1.3 differential test compiles ghq's codecommit pattern; the crate
 # itself ships no runtime regex engine.
@@ -46,6 +53,16 @@ tempfile = { version = "3", default-features = false }
 # test-only) for `tracing::subscriber::with_default`, used by
 # src/lib_tests.rs to install a subscriber scoped to one test body.
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+# divan owns `main` in each benchmark target, so cargo's own bench harness
+# has to be turned off for both.
+[[bench]]
+name = "url"
+harness = false
+
+[[bench]]
+name = "config"
+harness = false
 
 # ADR-11 bounded-unsafe policy. The shipped walker took the B2 (`rustix`)
 # path, so the crate holds no `unsafe` at all and no `allow(unsafe_code)`

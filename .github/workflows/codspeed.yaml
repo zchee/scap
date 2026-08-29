@@ -1,0 +1,116 @@
+# Per-commit performance tracking on CodSpeed.
+#
+# Two independent layers, in two jobs:
+#
+#   simulation  the divan micro-benchmarks in benches/, run under CodSpeed's
+#               deterministic CPU simulation. Sub-1% variance on shared
+#               runners, so it needs no dedicated hardware and runs on every
+#               push and pull request.
+#   walltime    the whole-program targets in codspeed.yaml, which measure
+#               what simulation cannot see: process startup, the
+#               configuration file reads and the parallel walk's system
+#               calls. Real time is only stable on dedicated hardware, so
+#               this job needs `runs-on: codspeed-macro` and stays opt-in
+#               behind a repository variable until macro runners are enabled
+#               for this repository.
+#
+# Neither layer replaces the hyperfine harness in docs/benchmarks/: that one
+# gates the optimization plan on a quiet machine under the D-4 RUSTFLAGS
+# regime, and CI here builds with clean flags, so the two sets of numbers
+# are not comparable to each other. What CodSpeed adds is the per-commit
+# history the quiet-machine runs cannot produce.
+#
+# Two things have to be done by hand before this workflow reports anything:
+# enable zchee/scap on codspeed.io, and add the CODSPEED_TOKEN repository
+# secret it hands back.
+name: CodSpeed
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  # CodSpeed triggers this to backfill history for a newly enabled
+  # repository.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  simulation:
+    name: Simulation (divan micro-benchmarks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # OpenID Connect authentication with CodSpeed, which is what lets the
+      # token below be optional on a public repository.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      # rust-toolchain.toml pins the same channel; naming it here means the
+      # toolchain is installed in one step instead of on first cargo use.
+      - name: Install the pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-28
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # cargo-codspeed builds the bench targets with the release
+          # profile.
+          cache-targets: "true"
+
+      - name: Install cargo-codspeed
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-codspeed@5.0.1
+
+      - name: Build the benchmark targets
+        run: cargo codspeed build -m simulation
+
+      - name: Run the benchmarks
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          run: cargo codspeed run
+          token: ${{ secrets.CODSPEED_TOKEN }}
+
+  walltime:
+    name: Walltime (whole-program exec harness)
+    # Walltime numbers from a shared runner are noise. Turn this on by
+    # setting the CODSPEED_WALLTIME repository variable to "true" once
+    # macro runners are available for this repository.
+    if: ${{ vars.CODSPEED_WALLTIME == 'true' }}
+    runs-on: codspeed-macro
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-28
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the release binary
+        run: cargo build --release
+
+      - name: Generate the repository fixture
+        run: scripts/bench-fixture.sh
+
+      # No `run:` input: with it empty the action runs the targets defined
+      # in codspeed.yaml, which is where the exec-harness commands live.
+      - name: Run the benchmarks
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: walltime
+          token: ${{ secrets.CODSPEED_TOKEN }}
