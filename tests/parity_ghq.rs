@@ -371,6 +371,71 @@ fn list_matches_ghq_with_symlinked_repo() {
 
 #[test]
 #[ignore]
+fn codecommit_destination_matches_ghq() {
+    // #12b: ghq's destination for a codecommit ref is always
+    // `<root>/<region>/<repo>` (local_repository.go:76-86: `pathParts =
+    // [Hostname()] + Path.split("/")`; url.go:100-106: `Path` is the bare
+    // repo name with no leading slash) -- no owner/profile path segment,
+    // with or without a `<profile>@` prefix in the ref. `ghq create <ref>`
+    // performs no network I/O and prints exactly that destination to
+    // stdout (verified against the real binary: git's own chatter is
+    // routed to stderr, same as `scap create`, see src/cmd/create.rs), so
+    // it is usable as an oracle without a real CodeCommit repository or
+    // AWS credentials.
+    //
+    // Every spelling below carries an explicit `::<region>:`. A bare
+    // `codecommit://<repo>` with no region resolves in ghq via
+    // AWS_REGION/AWS_DEFAULT_REGION or `aws configure get region`
+    // (url.go:63-97), which scap does not replicate (see the doc comment
+    // on `url::finalize_codecommit`); comparing that spelling against the
+    // real oracle would depend on the CI machine's AWS configuration
+    // rather than on scap's own logic, so it is intentionally excluded
+    // here.
+    let Some(ghq) = ghq_binary() else { return };
+
+    let refs = [
+        "codecommit::us-east-1://my-repo",
+        "codecommit::us-east-1://profile@my-repo",
+        "codecommit::eu-west-2://repo_1.x-y",
+        "codecommit::ap-southeast-1://user.name@my.repo-name_2",
+        "codecommit::sa-east-1://a-b-c",
+        "codecommit::us-gov-west-1://another_profile.name@some.repo_name-3",
+    ];
+
+    for r in refs {
+        let ghq_home = TempDir::new().unwrap();
+        let ghq_root = TempDir::new().unwrap();
+        let mut ghq_env = isolated(ghq_home.path(), ghq_root.path());
+        ghq_env.push(("GHQ_ROOT".to_string(), ghq_root.path().to_string_lossy().into_owned()));
+        let ghq_out =
+            Command::new(&ghq).args(["create", r]).envs(ghq_env.iter().cloned()).output().unwrap();
+        assert!(ghq_out.status.success(), "ghq create {r:?} failed: {ghq_out:?}");
+        let ghq_dest = String::from_utf8_lossy(&ghq_out.stdout).trim().to_owned();
+        let ghq_rel = std::path::Path::new(&ghq_dest)
+            .strip_prefix(ghq_root.path())
+            .unwrap_or_else(|_| panic!("ghq dest {ghq_dest:?} not under its root for {r:?}"));
+
+        let scap_home = TempDir::new().unwrap();
+        let scap_root = TempDir::new().unwrap();
+        let scap_env = isolated(scap_home.path(), scap_root.path());
+        let scap_out = ScapCmd::cargo_bin("scap")
+            .unwrap()
+            .args(["create", r])
+            .envs(scap_env.iter().cloned())
+            .output()
+            .unwrap();
+        assert!(scap_out.status.success(), "scap create {r:?} failed: {scap_out:?}");
+        let scap_dest = String::from_utf8_lossy(&scap_out.stdout).trim().to_owned();
+        let scap_rel = std::path::Path::new(&scap_dest)
+            .strip_prefix(scap_root.path())
+            .unwrap_or_else(|_| panic!("scap dest {scap_dest:?} not under its root for {r:?}"));
+
+        assert_eq!(scap_rel, ghq_rel, "destination diverges for {r:?}");
+    }
+}
+
+#[test]
+#[ignore]
 fn list_prunes_nested_repo_matches_ghq() {
     let Some(ghq) = ghq_binary() else { return };
     let home = TempDir::new().unwrap();

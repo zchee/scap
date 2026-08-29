@@ -465,15 +465,104 @@ fn emits_canonical_https_and_ssh_urls() {
 
 #[test]
 fn parses_codecommit_urls() {
+    // ghq never inserts an owner/profile path segment for a codecommit
+    // ref (local_repository.go:76-78) -- see the doc comment on
+    // `finalize_codecommit`.
     let r = from_input("codecommit::us-east-1://example-profile@my-repo", None, false).unwrap();
     assert_eq!(r.host, "us-east-1");
-    assert_eq!(r.owner, "example-profile");
+    assert_eq!(r.owner, "");
     assert_eq!(r.name, "my-repo");
     assert_eq!(r.vcs_hint.as_deref(), Some("git"));
 
     let r2 = from_input("codecommit://my-repo", None, false).unwrap();
     assert_eq!(r2.host, "codecommit");
+    assert_eq!(r2.owner, "");
     assert_eq!(r2.name, "my-repo");
+}
+
+// --- #12b: `finalize_codecommit` destination parity with ghq --------------
+//
+// ghq's destination for a codecommit ref is always `<root>/<region>/<repo>`
+// (local_repository.go:76-86, url.go:100-106): `pathParts` is
+// `[Hostname()] + Path.split("/")`, `Path` is the bare repo name with no
+// leading slash, and `User` (the optional `<profile>@`) never feeds the
+// path. Table below exercises every spelling ghq's `codecommitLikeURLPattern`
+// accepts (url.go:25): region present/absent, profile present/absent, and
+// repo names carrying `_`, `.`, `-`.
+
+struct CodecommitCase {
+    input: &'static str,
+    want_host: &'static str,
+    want_name: &'static str,
+}
+
+#[test]
+fn finalize_codecommit_matches_ghqs_path_components() {
+    let cases: &[(&str, CodecommitCase)] = &[
+        (
+            "no_region_no_profile",
+            CodecommitCase {
+                input: "codecommit://my-repo",
+                want_host: "codecommit",
+                want_name: "my-repo",
+            },
+        ),
+        (
+            "no_region_with_profile",
+            CodecommitCase {
+                input: "codecommit://profile@my-repo",
+                want_host: "codecommit",
+                want_name: "my-repo",
+            },
+        ),
+        (
+            "region_no_profile",
+            CodecommitCase {
+                input: "codecommit::us-east-1://my-repo",
+                want_host: "us-east-1",
+                want_name: "my-repo",
+            },
+        ),
+        (
+            "region_with_profile",
+            CodecommitCase {
+                input: "codecommit::us-east-1://example-profile@my-repo",
+                want_host: "us-east-1",
+                want_name: "my-repo",
+            },
+        ),
+        (
+            "repo_name_underscore_dot_hyphen",
+            CodecommitCase {
+                input: "codecommit::eu-west-2://repo_1.x-y",
+                want_host: "eu-west-2",
+                want_name: "repo_1.x-y",
+            },
+        ),
+        (
+            "region_and_profile_with_repo_name_underscore_dot_hyphen",
+            CodecommitCase {
+                input: "codecommit::ap-southeast-1://user.name@my.repo-name_2",
+                want_host: "ap-southeast-1",
+                want_name: "my.repo-name_2",
+            },
+        ),
+    ];
+
+    for (name, c) in cases {
+        let repo = from_input(c.input, None, false)
+            .unwrap_or_else(|e| panic!("{name} ({:?}): unexpected error: {e}", c.input));
+        assert_eq!(repo.host, c.want_host, "{name}: host");
+        assert_eq!(repo.owner, "", "{name}: owner must be empty, ghq inserts none");
+        assert_eq!(repo.name, c.want_name, "{name}: name");
+
+        // The destination is what `path::rel_path` computes from
+        // host/owner/name, so prove the component fix actually produces
+        // ghq's two-segment shape end to end.
+        let dest = crate::path::rel_path(&repo, false);
+        let want = std::path::PathBuf::from(c.want_host).join(c.want_name);
+        assert_eq!(dest, want, "{name}: rel_path");
+    }
 }
 
 #[test]

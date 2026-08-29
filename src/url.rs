@@ -336,6 +336,35 @@ fn parse_codecommit(input: &str) -> Option<(String, Option<String>, Option<Strin
     Some(("codecommit".to_owned(), region, user, repo))
 }
 
+/// Builds the destination path components (host/owner/name) for a parsed
+/// CodeCommit ref, matching ghq's `LocalRepositoryFromURL`
+/// (local_repository.go:75-86):
+///
+/// ```go
+/// pathParts := append(
+///     []string{remoteURL.Hostname()}, strings.Split(remoteURL.Path, "/")...,
+/// )
+/// ```
+///
+/// `newURL` (url.go:100-106) builds the `*url.URL` for a codecommit ref as
+/// `Host: region, User: url.User(user), Path: repoName` -- `Path` has no
+/// leading slash and is never more than the bare repo name, so
+/// `strings.Split(Path, "/")` is always a one-element slice and `pathParts`
+/// is always exactly `[region, repo]`. `User` (the optional `<profile>@`)
+/// is parsed into the URL but never read by `LocalRepositoryFromURL`, so it
+/// contributes nothing to the destination -- with or without a profile,
+/// ghq's destination is `<root>/<region>/<repo>`, never
+/// `<root>/<region>/<profile-or-placeholder>/<repo>`. `path::rel_path`
+/// already skips empty owner segments, so mirroring this is just: no owner
+/// segment, ever.
+///
+/// Region resolution when the ref omits `::<region>:` is env/AWS-CLI
+/// dependent in ghq (url.go:63-97: `AWS_REGION`, then
+/// `AWS_DEFAULT_REGION`, then `aws configure get region`, else exit(1)) --
+/// scap does not shell out to `aws` for this and keeps the pre-existing
+/// `codecommit` host placeholder instead of failing. That is a separate,
+/// known divergence from this fix, which is scoped to the path-component
+/// shape ghq produces once a host is known.
 fn finalize_codecommit(
     original: &str,
     _scheme: String,
@@ -343,13 +372,13 @@ fn finalize_codecommit(
     user: Option<String>,
     repo_name: String,
 ) -> Result<Repo, UrlError> {
-    let host = match region {
-        Some(r) => r,
-        None => "codecommit".to_owned(),
-    };
-    let owner = user.unwrap_or_else(|| "codecommit".to_owned());
+    let host = region.unwrap_or_else(|| "codecommit".to_owned());
+    let owner = String::new();
     let name = repo_name;
-    let https_url = format!("codecommit://{host}/{owner}/{name}");
+    let https_url = match &user {
+        Some(u) => format!("codecommit://{u}@{host}/{name}"),
+        None => format!("codecommit://{host}/{name}"),
+    };
     let ssh_url = https_url.clone();
     Ok(Repo {
         host,
