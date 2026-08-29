@@ -1,0 +1,4 @@
+Benchmark 1: w02-b3-jwalk-t4-b
+  Time (mean ± σ):      28.5 ms ±   1.0 ms    [User: 33.7 ms, System: 95.2 ms]
+  Range (min … max):    26.7 ms …  31.2 ms    30 runs
+ 

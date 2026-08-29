@@ -1,0 +1,4 @@
+Benchmark 1: w02-b1-deque-t4-a
+  Time (mean ± σ):     108.5 ms ±   4.0 ms    [User: 24.4 ms, System: 387.8 ms]
+  Range (min … max):   101.1 ms … 118.4 ms    30 runs
+ 

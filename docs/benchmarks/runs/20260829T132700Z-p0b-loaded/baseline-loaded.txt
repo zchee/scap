@@ -1,0 +1,18 @@
+==> [inventory] corpus a (/Users/zchee/src)
+==> [inventory] corpus b (/Users/zchee/go/src)
+==> [loaded_root_env] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'SCAP_ROOT=/Users/zchee/src' '/tmp/scap-baseline-7ac3527b/target/release/scap' 'root'
+Benchmark 1: loaded_root_env
+  Time (mean ± σ):       4.5 ms ±   0.2 ms    [User: 2.0 ms, System: 1.5 ms]
+  Range (min … max):     4.1 ms …   4.9 ms    30 runs
+ 
+==> [loaded_list_a] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'SCAP_ROOT=/Users/zchee/src' '/tmp/scap-baseline-7ac3527b/target/release/scap' 'list'
+Benchmark 1: loaded_list_a
+  Time (mean ± σ):     150.0 ms ±  22.1 ms    [User: 142.7 ms, System: 516.8 ms]
+  Range (min … max):   125.4 ms … 208.9 ms    30 runs
+ 
+==> [loaded_list_ab] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'SCAP_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/tmp/scap-baseline-7ac3527b/target/release/scap' 'list'
+Benchmark 1: loaded_list_ab
+  Time (mean ± σ):     156.5 ms ±   7.0 ms    [User: 171.9 ms, System: 551.8 ms]
+  Range (min … max):   147.6 ms … 171.4 ms    30 runs
+ 
+bench-quiet.sh: wrote /Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260829T132700Z-p0b-loaded/metadata.json and /Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260829T132700Z-p0b-loaded/summary.md (3 rows)

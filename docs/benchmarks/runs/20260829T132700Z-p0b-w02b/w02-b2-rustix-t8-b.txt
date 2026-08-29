@@ -1,0 +1,6 @@
+Benchmark 1: w02-b2-rustix-t8-b
+  Time (mean ± σ):      29.9 ms ±   2.2 ms    [User: 13.4 ms, System: 188.0 ms]
+  Range (min … max):    27.4 ms …  38.1 ms    30 runs
+ 
+  Warning: Statistical outliers were detected. Consider re-running this benchmark on a quiet system without any interferences from other programs. It might help to use the '--warmup' or '--prepare' options.
+ 

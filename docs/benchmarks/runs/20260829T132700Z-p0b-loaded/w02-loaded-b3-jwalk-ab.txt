@@ -1,0 +1,6 @@
+Benchmark 1: w02-loaded-b3-jwalk-ab
+  Time (mean ± σ):     179.1 ms ±  45.6 ms    [User: 156.1 ms, System: 1036.1 ms]
+  Range (min … max):   161.9 ms … 412.3 ms    30 runs
+ 
+  Warning: Statistical outliers were detected. Consider re-running this benchmark on a quiet system without any interferences from other programs. It might help to use the '--warmup' or '--prepare' options.
+ 

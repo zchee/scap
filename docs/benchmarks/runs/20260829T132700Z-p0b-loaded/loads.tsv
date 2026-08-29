@@ -1,0 +1,8 @@
+row	load1_before	load1_after
+w02-loaded-b1-lifo-ab	8.81	9.79
+w02-loaded-b1-fifo-ab	9.79	10.28
+w02-loaded-b1-deque-ab	10.28	10.74
+w02-loaded-b2-rustix-ab	10.74	11.92
+w02-loaded-b3-jwalk-ab	11.92	12.57
+w02-loaded-b4-attrbulk-ab	12.57	12.64
+baseline_loaded_rows	12.64	12.46

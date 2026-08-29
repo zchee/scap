@@ -1,0 +1,15 @@
+mode=std threads=1 wall_ms=2592.340 user_ms=19.797 sys_ms=1980.279
+mode=std threads=1 wall_ms=2615.645 user_ms=19.932 sys_ms=2019.117
+mode=std threads=1 wall_ms=2654.339 user_ms=19.524 sys_ms=1988.501
+mode=std threads=1 wall_ms=2611.949 user_ms=19.436 sys_ms=1972.372
+mode=std threads=1 wall_ms=2713.453 user_ms=19.794 sys_ms=2004.391
+mode=pool threads=4 wall_ms=1494.486 user_ms=29.651 sys_ms=4054.066
+mode=pool threads=4 wall_ms=1517.229 user_ms=29.875 sys_ms=4101.232
+mode=pool threads=4 wall_ms=1530.428 user_ms=29.867 sys_ms=4100.982
+mode=pool threads=4 wall_ms=1473.979 user_ms=29.595 sys_ms=4067.288
+mode=pool threads=4 wall_ms=1470.652 user_ms=29.744 sys_ms=4044.812
+mode=pool threads=8 wall_ms=2058.808 user_ms=52.685 sys_ms=9165.762
+mode=pool threads=8 wall_ms=2841.093 user_ms=55.428 sys_ms=10577.909
+mode=pool threads=8 wall_ms=2031.375 user_ms=53.024 sys_ms=9255.184
+mode=pool threads=8 wall_ms=2115.823 user_ms=54.163 sys_ms=9430.684
+mode=pool threads=8 wall_ms=2138.086 user_ms=53.744 sys_ms=9075.187

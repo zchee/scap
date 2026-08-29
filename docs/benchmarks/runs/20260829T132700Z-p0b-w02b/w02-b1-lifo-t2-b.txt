@@ -1,0 +1,4 @@
+Benchmark 1: w02-b1-lifo-t2-b
+  Time (mean ± σ):      39.1 ms ±   3.2 ms    [User: 5.5 ms, System: 68.8 ms]
+  Range (min … max):    35.5 ms …  46.0 ms    30 runs
+ 

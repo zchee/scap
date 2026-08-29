@@ -1,0 +1,4 @@
+Benchmark 1: w02-b4-attrbulk-t8-b
+  Time (mean ± σ):      83.5 ms ±   2.2 ms    [User: 6.4 ms, System: 573.2 ms]
+  Range (min … max):    80.7 ms …  88.8 ms    30 runs
+ 

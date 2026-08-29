@@ -1,0 +1,4 @@
+Benchmark 1: w02-b2-rustix-t12-b
+  Time (mean ± σ):      56.3 ms ±   3.2 ms    [User: 15.7 ms, System: 572.4 ms]
+  Range (min … max):    47.1 ms …  60.4 ms    30 runs
+ 

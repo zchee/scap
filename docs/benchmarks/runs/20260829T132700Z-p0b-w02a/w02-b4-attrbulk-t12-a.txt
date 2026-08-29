@@ -1,0 +1,4 @@
+Benchmark 1: w02-b4-attrbulk-t12-a
+  Time (mean ± σ):     346.7 ms ±  15.5 ms    [User: 26.5 ms, System: 3863.5 ms]
+  Range (min … max):   314.0 ms … 371.8 ms    30 runs
+ 

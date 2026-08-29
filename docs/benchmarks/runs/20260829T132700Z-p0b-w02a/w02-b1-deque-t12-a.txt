@@ -1,0 +1,4 @@
+Benchmark 1: w02-b1-deque-t12-a
+  Time (mean ± σ):     142.4 ms ±   3.7 ms    [User: 42.2 ms, System: 1522.4 ms]
+  Range (min … max):   133.0 ms … 150.0 ms    30 runs
+ 

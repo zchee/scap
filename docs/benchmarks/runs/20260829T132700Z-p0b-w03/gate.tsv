@@ -1,0 +1,6 @@
+phase	idle	top_proc	xprotectd	load1	time
+wall_before	86.50	8.7	0.00	2.34	13:37:36Z
+wall_after	88.98	9.8	0.00	11.87	13:40:50Z
+cpu_before	90.18	11.3	0.00	10.62	13:41:08Z
+cpu2_before	89.40	9.4	0.00	5.40	13:44:23Z
+cpu2_after	91.40	11.1	0.00	5.17	13:45:46Z

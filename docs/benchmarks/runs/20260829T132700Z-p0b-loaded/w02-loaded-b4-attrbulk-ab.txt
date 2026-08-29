@@ -1,0 +1,4 @@
+Benchmark 1: w02-loaded-b4-attrbulk-ab
+  Time (mean ± σ):     264.5 ms ±   5.3 ms    [User: 27.8 ms, System: 1809.7 ms]
+  Range (min … max):   255.2 ms … 277.4 ms    30 runs
+ 
