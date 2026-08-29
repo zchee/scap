@@ -134,7 +134,9 @@ def _pooled(windows: list[Window]) -> tuple[int, float, float, float, float, flo
 
 
 def _verdict(all_windows_met: bool, pooled_met: bool, disjoint_met: bool) -> str:
-    return "MET" if (all_windows_met and pooled_met and disjoint_met) else "AT-THE-BOUND"
+    return (
+        "MET" if (all_windows_met and pooled_met and disjoint_met) else "AT-THE-BOUND"
+    )
 
 
 def _print_table(rows: list[tuple[str, ...]], header: tuple[str, ...]) -> None:
@@ -143,7 +145,11 @@ def _print_table(rows: list[tuple[str, ...]], header: tuple[str, ...]) -> None:
     print(line)
     print("| " + " | ".join("-" * widths[i] for i in range(len(header))) + " |")
     for row in rows:
-        print("| " + " | ".join(row[i].ljust(widths[i]) for i in range(len(header))) + " |")
+        print(
+            "| "
+            + " | ".join(row[i].ljust(widths[i]) for i in range(len(header)))
+            + " |"
+        )
 
 
 def _metric_value(window: Window, metric: str) -> float:
@@ -222,7 +228,9 @@ def cmd_metric(args: argparse.Namespace) -> int:
         for w in windows:
             value = _metric_value(w, metric)
             if value > bound:
-                print(f"  over in {w.label}: {value:.3f} exceeds {bound} by {value - bound:.3f}")
+                print(
+                    f"  over in {w.label}: {value:.3f} exceeds {bound} by {value - bound:.3f}"
+                )
         if not pooled_met:
             print(
                 f"  over pooled: {pooled_value:.3f} exceeds {bound} by {pooled_value - bound:.3f}"
@@ -275,7 +283,9 @@ def build_parser() -> argparse.ArgumentParser:
     for metric in ("wall", "user", "sys"):
         p = sub.add_parser(metric, help=f"evaluate the {metric} leg across windows")
         p.add_argument("exports", nargs="+", help="one hyperfine JSON per window")
-        p.add_argument("--bound", type=float, required=True, help="the frozen upper bound (ms)")
+        p.add_argument(
+            "--bound", type=float, required=True, help="the frozen upper bound (ms)"
+        )
         if metric == "wall":
             # Only on `wall`: the pooled IQR is a box of per-run WALL times, so
             # asking whether it clears a reference band is a question only the
@@ -291,7 +301,9 @@ def build_parser() -> argparse.ArgumentParser:
             p.set_defaults(disjoint_from=None)
         p.set_defaults(func=cmd_metric, metric=metric)
 
-    p = sub.add_parser("sys-ratio", help="thread rule clause 2: sys(N)/sys(1) per window")
+    p = sub.add_parser(
+        "sys-ratio", help="thread rule clause 2: sys(N)/sys(1) per window"
+    )
     p.add_argument(
         "--pair",
         action="append",
@@ -299,7 +311,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ONE.json:MANY.json",
         help="the N=1 export and the N=N* export from the same window",
     )
-    p.add_argument("--bound", type=float, default=1.5, help="the clause ceiling (default 1.5)")
+    p.add_argument(
+        "--bound", type=float, default=1.5, help="the clause ceiling (default 1.5)"
+    )
     p.set_defaults(func=cmd_sys_ratio)
 
     return parser
