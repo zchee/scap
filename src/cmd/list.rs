@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use bstr::ByteSlice;
 use clap::Args;
 use gix_glob::wildmatch;
-use jwalk::{DirEntry, Parallelism, ReadChildren, WalkDirGeneric};
+use jwalk::{Parallelism, ReadChildren, WalkDirGeneric};
 
 use crate::config;
 
@@ -169,7 +169,15 @@ fn walk_for_repos_with_seen(
     let walk_root: Arc<Path> = Arc::from(root);
 
     let walker = WalkDirGeneric::<((), bool)>::new(root)
-        .follow_links(true)
+        // ADR-9 rule (iii): jwalk must not resolve links on scap's behalf.
+        // With `follow_links(true)` a symlinked directory is reported as a
+        // directory and descended, so `list` printed repositories ghq never
+        // reaches -- W0.4 case 2 and case 14a, where ghq printed nothing and
+        // scap printed `link-to-plain-dir/nested/repo`. Off, every symlink
+        // is reported as a symlink and left unread, and the one link ghq
+        // does emit -- one whose target is itself a repository -- is
+        // recognised by the explicit `metadata` call in `process_read_dir`.
+        .follow_links(false)
         .parallelism(Parallelism::RayonNewPool(WALK_THREADS))
         .skip_hidden(false)
         .sort(false)
@@ -225,7 +233,15 @@ fn walk_for_repos_with_seen(
                     Err(_) => continue,
                 };
 
-                if !child.file_type().is_dir() {
+                // ADR-9 rule (iii): a symlink is a candidate as well as a
+                // directory. ghq resolves one for `IsDir` and, when the
+                // target is a repository, calls back with the *link's* path
+                // (local_repository.go:268-299); it never walks through one
+                // (walker.go:85-90). Anything else -- a regular file, a
+                // socket -- is neither.
+                let file_type = child.file_type();
+                let is_symlink = file_type.is_symlink();
+                if !file_type.is_dir() && !is_symlink {
                     continue;
                 }
 
@@ -242,7 +258,31 @@ fn walk_for_repos_with_seen(
                     }
                 }
 
-                if is_repo_dir_entry(child) {
+                let child_path = child.path();
+
+                // ADR-9 rules (iii) and (iv): one following `stat` per
+                // symlink, and only per symlink. A link that resolves to
+                // anything but a directory -- a regular file, a dangling
+                // target, a loop -- is not a candidate. ghq prints nothing
+                // for any of them (W0.4 cases 3, 4, 5 and 7), so the
+                // resolution failure stays at the debug level rather than
+                // putting a line on stderr that the oracle does not have.
+                if is_symlink {
+                    match std::fs::metadata(&child_path) {
+                        Ok(meta) if meta.is_dir() => {}
+                        Ok(_) => continue,
+                        Err(err) => {
+                            tracing::debug!("{}: {err}", child_path.display());
+                            continue;
+                        }
+                    }
+                }
+
+                if is_repo_path(&child_path) {
+                    // Not descended: ghq prunes a repository's own subtree,
+                    // and never descends a symlink at all. jwalk reads
+                    // neither a `read_children = None` directory nor -- with
+                    // `follow_links(false)` -- any symlink.
                     child.read_children = None;
                     child.client_state = true;
                 }
@@ -269,7 +309,11 @@ fn walk_for_repos_with_seen(
             report_walk_error(err);
         }
 
-        if !entry.file_type().is_dir() || !entry.client_state {
+        // `client_state` is set only where `process_read_dir` identified a
+        // repository, so it carries the file-type test already. It is not
+        // redundant with one here: under rule (iii) a symlinked repository
+        // is emitted, and its own file type is a symlink, not a directory.
+        if !entry.client_state {
             continue;
         }
 
@@ -356,12 +400,13 @@ fn metadata_is_readable(_meta: &std::fs::Metadata) -> bool {
 ///
 /// Only a permission error reaches stderr by default, and it carries ghq's
 /// own wording rather than the OS string so it does not vary by platform.
-/// Everything else is a debug line: ghq prints nothing for those, and with
-/// `follow_links(true)` a single dangling symlink anywhere in a corpus --
-/// the maintainer's has one, a stale documentation link -- would otherwise
-/// put a line on every `scap list`, which teaches users to stop reading its
-/// stderr and so costs more than it reports. W2b.2's `follow_links(false)`
-/// removes that class of error from the walk entirely.
+/// Everything else is a debug line: ghq prints nothing for those, and a
+/// single dangling symlink anywhere in a corpus -- the maintainer's has one,
+/// a stale documentation link -- would otherwise put a line on every `scap
+/// list`, which teaches users to stop reading its stderr and so costs more
+/// than it reports. Under rule (iii)'s `follow_links(false)` the walk no
+/// longer manufactures that class at all: an unresolvable symlink is
+/// reported from `process_read_dir`'s own `metadata` call, at debug.
 fn report_walk_io_error(path: &Path, err: &io::Error) {
     // Both EACCES and EPERM map to `PermissionDenied`.
     if err.kind() == io::ErrorKind::PermissionDenied {
@@ -374,7 +419,11 @@ fn report_walk_io_error(path: &Path, err: &io::Error) {
 fn report_walk_error(err: &jwalk::Error) {
     match (err.path(), err.io_error()) {
         (Some(path), Some(io_err)) => report_walk_io_error(path, io_err),
-        // A symlink loop carries no `io::Error`. ghq is silent there too.
+        // A jwalk error with no `io::Error` behind it -- a depth or
+        // recursion complaint of its own. Symlink loops no longer arrive
+        // here: with `follow_links(false)` the walk never resolves a link,
+        // so a loop surfaces as the ELOOP that rule (iii)'s own `metadata`
+        // call returns, and is logged there. ghq is silent for both.
         (Some(path), None) => tracing::debug!("{}: {err}", path.display()),
         (None, _) => tracing::debug!("{err}"),
     }
@@ -413,14 +462,10 @@ fn maybe_push_repo(
     }
 }
 
-fn is_repo_dir_entry(entry: &DirEntry<((), bool)>) -> bool {
-    if !entry.file_type().is_dir() {
-        return false;
-    }
-
-    is_repo_path(&entry.path())
-}
-
+/// ADR-9 rule (ii): a directory whose *own name* ends in `.git` is a
+/// repository without being opened, and rule (iii) applies that test to a
+/// symlink's name rather than its target's -- so `link -> upstream.git` is
+/// not a repository, while `link.git -> upstream.git` is (W0.4 case 7).
 fn is_repo_path(path: &Path) -> bool {
     if path.file_name().and_then(|n| n.to_str()).is_some_and(|name| name.ends_with(".git")) {
         return true;

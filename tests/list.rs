@@ -126,7 +126,6 @@ fn list_prints_relative_paths_sorted() {
 }
 
 #[test]
-#[ignore]
 fn list_direct_root_repo() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -168,20 +167,27 @@ fn list_ignores_gitignore_patterns_when_listing_repos() {
     cmd.arg("list").assert().success().stdout(predicate::eq("ignored/repo\n"));
 }
 
+/// ADR-9 rule (iii): a symlink to a directory that is *not itself* a
+/// repository is never descended, so the repositories under it are not
+/// listed at all.
+///
+/// Was `list_symlinked_repo_is_discovered_once`, expecting `real/repo` --
+/// the repository reached *through* the link. Both the name and the
+/// expectation predate anyone asking the oracle. W0.4 case 14a asked it: on
+/// exactly this fixture `ghq list` prints nothing, because ghq's walker
+/// refuses to recurse through a symlink (walker.go:85-90). Nothing is
+/// discovered here, once or otherwise, so the name said something untrue
+/// about the very behaviour the test now pins.
+#[cfg(unix)]
 #[test]
-#[ignore]
-fn list_symlinked_repo_is_discovered_once() {
+fn list_does_not_descend_a_symlinked_non_repo_dir() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
     let target = TempDir::new().unwrap();
     init_repo(target.path(), "real/repo", false);
-    #[cfg(unix)]
     std::os::unix::fs::symlink(target.path(), root.path().join("linked")).unwrap();
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    #[cfg(unix)]
-    cmd.arg("list").assert().success().stdout(predicate::eq("real/repo\n"));
-    #[cfg(not(unix))]
     cmd.arg("list").assert().success().stdout(predicate::eq(""));
 }
 
@@ -219,7 +225,6 @@ fn list_includes_hidden_and_ignored_repo_paths() {
 
 #[test]
 #[cfg(unix)]
-#[ignore]
 fn list_reports_real_and_symlinked_repos() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -233,7 +238,6 @@ fn list_reports_real_and_symlinked_repos() {
 }
 
 #[test]
-#[ignore]
 fn list_detects_git_file_repositories() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -430,7 +434,6 @@ fn list_does_not_filter_gitignored_paths() {
 }
 
 #[test]
-#[ignore]
 fn list_recognizes_gitfile_markers() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -473,7 +476,6 @@ fn list_does_not_filter_by_parent_gitignore() {
 }
 
 #[test]
-#[ignore]
 fn list_detects_git_file_markers() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -485,7 +487,6 @@ fn list_detects_git_file_markers() {
 
 #[cfg(unix)]
 #[test]
-#[ignore]
 fn list_includes_symlinked_repo_path_when_present() {
     use std::os::unix::fs::symlink;
 
@@ -526,24 +527,29 @@ fn list_does_not_filter_by_gitignore_contents() {
     cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\n"));
 }
 
+/// ADR-9 rule (iii): a symlink whose target *is* a repository is emitted,
+/// at the link's own path, alongside the target.
+///
+/// The counterpart of `list_does_not_descend_a_symlinked_non_repo_dir`,
+/// and the second expectation W0.4 rewrote (case 14b). The old one named
+/// `github.com/a/x`; ghq prints `mirror` too, because it resolves the link
+/// for `IsDir`, stats `<link>/.git`, and then calls back with the link path
+/// (local_repository.go:268-299). scap already emitted both lines when this
+/// test was written -- the assertion, not the code, was the stale half.
+#[cfg(unix)]
 #[test]
-#[ignore]
 fn list_includes_symlinked_repository_target() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
     init_repo(root.path(), "github.com/a/x", false);
-    #[cfg(unix)]
-    {
-        let link = root.path().join("mirror");
-        unix_fs::symlink(root.path().join("github.com/a/x"), &link).unwrap();
-    }
+    let link = root.path().join("mirror");
+    unix_fs::symlink(root.path().join("github.com/a/x"), &link).unwrap();
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
-    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\n"));
+    cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\nmirror\n"));
 }
 
 #[test]
-#[ignore]
 fn list_detects_gitdir_marker_repositories() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -1001,4 +1007,123 @@ fn list_is_silent_about_a_dangling_symlink_by_default() {
     let stderr = String::from_utf8_lossy(&loud.stderr);
     assert!(stderr.contains("dangling"), "stderr: {stderr}");
     assert!(stderr.contains("No such file or directory"), "stderr: {stderr}");
+}
+
+// -- ADR-9 rules (iii), (iv) and (vii): symlink, `.git` and root semantics --
+//
+// Each of these is pinned against the real `ghq` in tests/parity_ghq.rs as
+// well. The pair is deliberate: the parity test proves scap agrees with the
+// oracle and skips when no oracle is installed, and the test here states
+// what the agreed answer *is*, so the semantics stay covered on a machine
+// with no `ghq` and a diff shows which rule a change moved.
+
+/// ADR-9 rule (iii): a link that resolves to nothing is not an entry, and
+/// says nothing on stderr (W0.4 case 4 -- ghq is silent for a loop too).
+#[cfg(unix)]
+#[test]
+fn list_is_silent_about_a_symlink_loop() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    init_repo(root.path(), "github.com/a/x", false);
+    symlink("loop-b", root.path().join("loop-a")).unwrap();
+    symlink("loop-a", root.path().join("loop-b")).unwrap();
+
+    let mut cmd = Command::cargo_bin("scap").unwrap();
+    isolated(&mut cmd, home.path(), root.path());
+    let out = cmd.arg("list").output().unwrap();
+
+    assert!(out.status.success(), "expected exit 0, got {:?}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "github.com/a/x\n");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "", "a symlink loop must not reach stderr");
+}
+
+/// ADR-9 rule (iv): the `.git` entry may be a symlink, and then it has to
+/// resolve. A dangling one leaves an ordinary directory (W0.4 case 5); one
+/// pointing at a real git directory makes a repository (case 6).
+#[cfg(unix)]
+#[test]
+fn list_requires_a_dot_git_symlink_to_resolve() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+
+    let dangling = root.path().join("dangling-git");
+    fs::create_dir_all(&dangling).unwrap();
+    symlink(root.path().join("nowhere"), dangling.join(".git")).unwrap();
+
+    let donor = root.path().join("github.com/a/donor");
+    init_repo_at(&donor, false);
+    let borrowed = root.path().join("github.com/a/borrowed");
+    fs::create_dir_all(&borrowed).unwrap();
+    symlink(donor.join(".git"), borrowed.join(".git")).unwrap();
+
+    let mut cmd = Command::cargo_bin("scap").unwrap();
+    isolated(&mut cmd, home.path(), root.path());
+    cmd.arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::eq("github.com/a/borrowed\ngithub.com/a/donor\n"));
+}
+
+/// ADR-9 rules (ii) and (iii): the `.git` *suffix* test is applied to the
+/// entry's own name, so it reads a symlink's name and not its target's.
+/// `link -> upstream.git` is therefore not a repository and `link.git ->
+/// upstream.git` is (W0.4 case 7).
+#[cfg(unix)]
+#[test]
+fn list_reads_the_git_suffix_off_the_link_name_not_the_target() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let upstream = store.path().join("upstream.git");
+    init_repo_at(&upstream, true);
+
+    symlink(&upstream, root.path().join("link-to-bare")).unwrap();
+    symlink(&upstream, root.path().join("named.git")).unwrap();
+
+    let mut cmd = Command::cargo_bin("scap").unwrap();
+    isolated(&mut cmd, home.path(), root.path());
+    cmd.arg("list").assert().success().stdout(predicate::eq("named.git\n"));
+}
+
+/// ADR-9 rule (vii): no cross-root de-duplication. A relative path present
+/// in three roots is printed three times by `list`, once per root by `list
+/// -p`, and collapses only under `--unique`, which needs those duplicates to
+/// decide anything (cmd_list.go:78-110).
+#[test]
+fn list_prints_a_duplicated_relative_path_once_per_root() {
+    let home = TempDir::new().unwrap();
+    let roots: Vec<TempDir> = (0..3).map(|_| TempDir::new().unwrap()).collect();
+    for r in &roots {
+        init_repo(r.path(), "github.com/a/dup", false);
+    }
+    init_repo(roots[1].path(), "github.com/b/only", false);
+
+    let joined = std::env::join_paths(roots.iter().map(TempDir::path)).unwrap();
+    let run = |flags: &[&str]| {
+        let mut cmd = Command::cargo_bin("scap").unwrap();
+        isolated(&mut cmd, home.path(), roots[0].path());
+        let out = cmd.env("SCAP_ROOT", &joined).args(flags).output().unwrap();
+        assert!(out.status.success(), "{flags:?} exited {:?}", out.status);
+        String::from_utf8(out.stdout).unwrap()
+    };
+
+    assert_eq!(
+        run(&["list"]),
+        "github.com/a/dup\ngithub.com/a/dup\ngithub.com/a/dup\ngithub.com/b/only\n"
+    );
+
+    // `-p` distinguishes them, so every root contributes its own line.
+    let full = run(&["list", "-p"]);
+    for r in &roots {
+        let real = fs::canonicalize(r.path()).unwrap();
+        assert!(
+            full.contains(&format!("{}/github.com/a/dup\n", real.display())),
+            "missing {} in {full}",
+            real.display()
+        );
+    }
+    assert_eq!(full.lines().count(), 4, "{full}");
+
+    // `--unique` keeps the shortest unambiguous subpath, once.
+    assert_eq!(run(&["list", "--unique"]), "dup\nonly\n");
 }
