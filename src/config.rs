@@ -121,6 +121,7 @@ pub struct Env {
     pub git_dir: Option<PathBuf>,
     pub git_ceiling_directories: Option<OsString>,
     pub scap_root: Option<OsString>,
+    pub scap_list_exclude: Option<OsString>,
     pub scap_config_backend: Option<OsString>,
     pub cwd: Option<PathBuf>,
     pub path: Option<OsString>,
@@ -150,6 +151,7 @@ impl Env {
             git_dir: non_empty_var_os("GIT_DIR").map(PathBuf::from),
             git_ceiling_directories: non_empty_var_os("GIT_CEILING_DIRECTORIES"),
             scap_root: std::env::var_os("SCAP_ROOT"),
+            scap_list_exclude: std::env::var_os("SCAP_LIST_EXCLUDE"),
             scap_config_backend: std::env::var_os("SCAP_CONFIG_BACKEND"),
             cwd: std::env::current_dir().ok(),
             path: std::env::var_os("PATH"),
@@ -243,7 +245,18 @@ impl ConfigSnapshot {
         self.complete_user
     }
 
-    /// `scap.listExclude` (multi), for ADR-9 rule (viii) in Phase 2b.
+    /// The effective `scap.listExclude` patterns (ADR-9 rule (viii)).
+    ///
+    /// A non-empty `SCAP_LIST_EXCLUDE` replaces the configured values
+    /// wholesale rather than adding to them, which is how `SCAP_ROOT`
+    /// already relates to `scap.root`: one variable on the command line
+    /// then describes the whole exclusion set, and there is no spelling for
+    /// "drop a pattern the gitconfig sets". An empty or unset variable
+    /// leaves the configured values alone.
+    ///
+    /// The variable is split on `:`, so a pattern containing a literal
+    /// colon can only be written through the configuration key. Matching is
+    /// case-sensitive against the on-disk spelling either way.
     pub fn list_exclude(&self) -> &[String] {
         &self.list_exclude
     }
@@ -562,6 +575,42 @@ fn has_unevaluable_includeif(file: &gix_config::File) -> bool {
     })
 }
 
+/// Fold `SCAP_LIST_EXCLUDE` into the `scap.listExclude` values parsed from
+/// the gitconfig.
+///
+/// The variable is split like a `PATH` list -- colon-separated on unix, the
+/// same treatment `SCAP_ROOT` gets -- and an empty variable counts as unset,
+/// again as for `SCAP_ROOT`, so `SCAP_LIST_EXCLUDE= scap list` is not a way
+/// to suppress a configured pattern. Empty segments are dropped: a pattern
+/// that matches the empty root-relative path could only ever match nothing,
+/// and accepting it would make a stray `::` silently meaningful.
+fn effective_list_exclude(env: &Env, from_config: Vec<String>) -> Vec<String> {
+    let Some(value) = env.scap_list_exclude.as_ref().filter(|v| !v.is_empty()) else {
+        return from_config.into_iter().filter_map(|p| normalize_exclude(&p)).collect();
+    };
+    std::env::split_paths(value)
+        .filter_map(|pattern| normalize_exclude(&pattern.to_string_lossy()))
+        .collect()
+}
+
+/// Fold one exclusion pattern into the form the matcher expects.
+///
+/// A single trailing `/` is stripped, so `node_modules/` and `node_modules`
+/// are the same pattern. Writing the slash is the `.gitignore` habit for
+/// "this is a directory", and here every candidate already is one -- the
+/// matcher is only ever offered directories -- so the suffix carries no
+/// information and silently matching nothing would be a trap. Only one
+/// slash goes: `foo//` still has one left and still matches nothing, which
+/// is the honest reading of a pattern naming an empty path component.
+///
+/// A pattern that is empty, or is nothing but that slash, is dropped: it
+/// could only ever match the empty root-relative path, which no candidate
+/// has.
+fn normalize_exclude(pattern: &str) -> Option<String> {
+    let folded = pattern.strip_suffix('/').unwrap_or(pattern);
+    (!folded.is_empty()).then(|| folded.to_owned())
+}
+
 fn from_file(file: Option<&gix_config::File>, env: &Env) -> ConfigSnapshot {
     let mut roots = Vec::new();
     let mut url_scoped_roots = Vec::new();
@@ -600,7 +649,7 @@ fn from_file(file: Option<&gix_config::File>, env: &Env) -> ConfigSnapshot {
         url_scoped_roots,
         user,
         complete_user,
-        list_exclude,
+        list_exclude: effective_list_exclude(env, list_exclude),
         list_cache,
         backend: Backend::InProcess,
         reason,

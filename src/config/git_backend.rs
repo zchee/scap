@@ -10,7 +10,8 @@ use std::process::Command;
 use bstr::{BStr, ByteSlice};
 
 use super::{
-    Backend, ConfigError, ConfigSnapshot, Env, Reason, git_boolean, interpolate_value, sources,
+    Backend, ConfigError, ConfigSnapshot, Env, Reason, effective_list_exclude, git_boolean,
+    interpolate_value, sources,
 };
 
 /// Load the whole snapshot through `git`.
@@ -122,7 +123,7 @@ fn from_listing(listing: &[u8], env: &Env, reason: Reason) -> ConfigSnapshot {
         url_scoped_roots,
         user,
         complete_user,
-        list_exclude,
+        list_exclude: effective_list_exclude(env, list_exclude),
         list_cache,
         backend: Backend::Git,
         reason,

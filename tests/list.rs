@@ -25,6 +25,9 @@ fn isolated(cmd: &mut Command, home: &Path, root: &Path) {
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("GIT_DIR")
         .env_remove("GIT_CEILING_DIRECTORIES")
+        .env_remove("SCAP_LIST_EXCLUDE")
+        .env_remove("SCAP_LOG")
+        .env_remove("RUST_LOG")
         // Repository discovery reads the configuration of whatever
         // repository contains the working directory, and the test runner's
         // is the scap checkout itself. Pin it to the fixture.
@@ -548,4 +551,454 @@ fn list_detects_gitdir_marker_repositories() {
     let mut cmd = Command::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
     cmd.arg("list").assert().success().stdout(predicate::eq("github.com/a/x\n"));
+}
+
+// -- ADR-9 rule (viii): opt-in root-relative exclusions ---------------------
+
+/// Read one `name=<digits>` field back out of a `scap::walk::root` span close
+/// line, the way plan §5 says the counters are observed: run the binary with
+/// `SCAP_LOG=debug`, capture stderr, and match the field.
+fn span_field(stderr: &str, field: &str) -> Option<usize> {
+    let needle = format!("{field}=");
+    let start = stderr.find(&needle)? + needle.len();
+    stderr[start..].chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok()
+}
+
+/// A root holding two repositories plus a deep non-repository subtree under
+/// `github.com/zchee/big.bak`, which is the shape corpus a has: one
+/// user-identifiable directory that dominates the directory reads without
+/// containing anything `list` would print.
+fn exclusion_fixture(root: &Path) {
+    init_repo(root, "github.com/a/x", false);
+    init_repo(root, "bar/foo", false);
+    fs::create_dir_all(root.join("github.com/zchee/big.bak/deep/deeper")).unwrap();
+    init_repo(root, "github.com/zchee/big.bak/inner", false);
+}
+
+fn write_scap_config(home: &Path, body: &str) {
+    fs::write(home.join("gitconfig"), body).unwrap();
+}
+
+#[test]
+fn list_exclude_env_prunes_the_named_subtree() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    exclusion_fixture(root.path());
+
+    let mut cmd = Command::cargo_bin("scap").unwrap();
+    isolated(&mut cmd, home.path(), root.path());
+    cmd.env("SCAP_LIST_EXCLUDE", "github.com/zchee/big.bak")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::eq("bar/foo\ngithub.com/a/x\n"));
+}
+
+#[test]
+fn list_exclude_records_dirs_read_and_excluded_on_the_walk_span() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    exclusion_fixture(root.path());
+
+    let mut baseline = Command::cargo_bin("scap").unwrap();
+    isolated(&mut baseline, home.path(), root.path());
+    let baseline = baseline.env("SCAP_LOG", "debug").arg("list").assert().success();
+    let baseline = String::from_utf8_lossy(&baseline.get_output().stderr).into_owned();
+
+    let mut excluded = Command::cargo_bin("scap").unwrap();
+    isolated(&mut excluded, home.path(), root.path());
+    let excluded = excluded
+        .env("SCAP_LOG", "debug")
+        .env("SCAP_LIST_EXCLUDE", "github.com/zchee/big.bak")
+        .arg("list")
+        .assert()
+        .success();
+    let excluded = String::from_utf8_lossy(&excluded.get_output().stderr).into_owned();
+
+    let baseline_dirs = span_field(&baseline, "dirs_read")
+        .unwrap_or_else(|| panic!("no dirs_read on the close line: {baseline}"));
+    let excluded_dirs = span_field(&excluded, "dirs_read")
+        .unwrap_or_else(|| panic!("no dirs_read on the close line: {excluded}"));
+
+    assert_eq!(span_field(&baseline, "excluded"), Some(0), "stderr: {baseline}");
+    assert_eq!(span_field(&excluded, "excluded"), Some(1), "stderr: {excluded}");
+    // `big.bak`, `big.bak/deep` and `big.bak/deep/deeper` are read in the
+    // baseline and not in the excluded run; `big.bak/inner` is a repository
+    // and is pruned either way.
+    assert_eq!(
+        excluded_dirs + 3,
+        baseline_dirs,
+        "excluded run read {excluded_dirs} directories, baseline {baseline_dirs}"
+    );
+}
+
+#[test]
+fn list_exclude_non_matching_pattern_changes_nothing() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    exclusion_fixture(root.path());
+
+    let mut baseline = Command::cargo_bin("scap").unwrap();
+    isolated(&mut baseline, home.path(), root.path());
+    let baseline = baseline.arg("list").assert().success();
+    let baseline = baseline.get_output().stdout.clone();
+
+    let mut cmd = Command::cargo_bin("scap").unwrap();
+    isolated(&mut cmd, home.path(), root.path());
+    let out = cmd
+        .env("SCAP_LOG", "debug")
+        .env("SCAP_LIST_EXCLUDE", "no/such/directory")
+        .arg("list")
+        .assert()
+        .success();
+    assert_eq!(out.get_output().stdout, baseline);
+    let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert_eq!(span_field(&stderr, "excluded"), Some(0), "stderr: {stderr}");
+}
+
+#[test]
+fn list_exclude_pattern_is_anchored_at_the_root() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    exclusion_fixture(root.path());
+
+    // `bar/foo` exists, `foo` at the root does not: an unanchored match
+    // would drop it, an anchored one leaves it alone.
+    let mut cmd = Command::cargo_bin("scap").unwrap();
+    isolated(&mut cmd, home.path(), root.path());
+    cmd.env("SCAP_LIST_EXCLUDE", "foo")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::eq("bar/foo\ngithub.com/a/x\ngithub.com/zchee/big.bak/inner\n"));
+}
+
+#[test]
+fn list_exclude_single_star_does_not_cross_a_separator() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    exclusion_fixture(root.path());
+
+    // `*` stops at `/` (git's WM_PATHNAME), so a one-segment pattern cannot
+    // reach a two-segment path; `**` can.
+    let mut narrow = Command::cargo_bin("scap").unwrap();
+    isolated(&mut narrow, home.path(), root.path());
+    narrow.env("SCAP_LIST_EXCLUDE", "*").arg("list").assert().success().stdout(predicate::eq(""));
+
+    let mut wide = Command::cargo_bin("scap").unwrap();
+    isolated(&mut wide, home.path(), root.path());
+    wide.env("SCAP_LIST_EXCLUDE", "github.com/*/big.bak")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::eq("bar/foo\ngithub.com/a/x\n"));
+}
+
+#[test]
+fn list_exclude_accepts_several_colon_separated_patterns() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    exclusion_fixture(root.path());
+
+    let mut cmd = Command::cargo_bin("scap").unwrap();
+    isolated(&mut cmd, home.path(), root.path());
+    cmd.env("SCAP_LIST_EXCLUDE", "github.com/zchee/big.bak:bar")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::eq("github.com/a/x\n"));
+}
+
+#[test]
+fn list_exclude_can_name_a_repository_directory() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    exclusion_fixture(root.path());
+
+    // A repository directory is queued like any other, so a pattern that
+    // names one drops it from the listing without touching its siblings.
+    let mut cmd = Command::cargo_bin("scap").unwrap();
+    isolated(&mut cmd, home.path(), root.path());
+    cmd.env("SCAP_LIST_EXCLUDE", "github.com/a/x")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::eq("bar/foo\ngithub.com/zchee/big.bak/inner\n"));
+}
+
+#[test]
+fn list_exclude_folds_a_trailing_slash_in_a_pattern() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    exclusion_fixture(root.path());
+
+    // `.gitignore` habit: a trailing slash spells "directory". Every
+    // exclusion candidate already is one, so both spellings must prune the
+    // same subtree and report the same `excluded` count.
+    for pattern in ["github.com/zchee/big.bak", "github.com/zchee/big.bak/"] {
+        let mut cmd = Command::cargo_bin("scap").unwrap();
+        isolated(&mut cmd, home.path(), root.path());
+        let out = cmd
+            .env("SCAP_LOG", "debug")
+            .env("SCAP_LIST_EXCLUDE", pattern)
+            .arg("list")
+            .assert()
+            .success();
+        assert_eq!(
+            String::from_utf8_lossy(&out.get_output().stdout),
+            "bar/foo\ngithub.com/a/x\n",
+            "pattern {pattern:?}"
+        );
+        let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+        assert_eq!(span_field(&stderr, "excluded"), Some(1), "pattern {pattern:?}: {stderr}");
+    }
+}
+
+#[test]
+fn list_exclude_config_form_matches_the_env_form() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    exclusion_fixture(root.path());
+
+    let mut via_env = Command::cargo_bin("scap").unwrap();
+    isolated(&mut via_env, home.path(), root.path());
+    let via_env = via_env
+        .env("SCAP_LIST_EXCLUDE", "github.com/zchee/big.bak:bar")
+        .arg("list")
+        .assert()
+        .success();
+    let via_env = via_env.get_output().stdout.clone();
+
+    write_scap_config(
+        home.path(),
+        "[scap]\n\tlistExclude = github.com/zchee/big.bak\n\tlistExclude = bar\n",
+    );
+    let mut via_config = Command::cargo_bin("scap").unwrap();
+    isolated(&mut via_config, home.path(), root.path());
+    let via_config = via_config.arg("list").assert().success();
+
+    assert_eq!(via_config.get_output().stdout, via_env);
+    assert_eq!(String::from_utf8_lossy(&via_env), "github.com/a/x\n");
+}
+
+#[test]
+fn list_exclude_env_replaces_the_configured_patterns() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    exclusion_fixture(root.path());
+    write_scap_config(home.path(), "[scap]\n\tlistExclude = bar\n");
+
+    // The variable is the whole exclusion set, as `SCAP_ROOT` is the whole
+    // root list: `bar` comes back even though the gitconfig excludes it.
+    let mut cmd = Command::cargo_bin("scap").unwrap();
+    isolated(&mut cmd, home.path(), root.path());
+    cmd.env("SCAP_LIST_EXCLUDE", "github.com/zchee/big.bak")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::eq("bar/foo\ngithub.com/a/x\n"));
+}
+
+// -- ADR-9 rules (v) and (vi): unreadable directories and roots -------------
+
+/// Restores `dir`'s original mode when dropped.
+///
+/// A guard rather than a straight-line call, so that a panic inside the
+/// closure -- an assertion firing, or `Command` failing -- cannot leave a
+/// mode-000 directory behind in `$TMPDIR`, which `TempDir` would then be
+/// unable to remove.
+#[cfg(unix)]
+struct RestoreMode<'a> {
+    dir: &'a Path,
+    original: fs::Permissions,
+}
+
+#[cfg(unix)]
+impl Drop for RestoreMode<'_> {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(self.dir, self.original.clone());
+    }
+}
+
+/// Run `run` with `dir` at mode 000.
+///
+/// Returns `None` when mode 000 does not actually deny this user, which is
+/// the case for root: the test that called it has nothing to observe and
+/// should skip rather than fail on a true negative.
+#[cfg(unix)]
+fn with_unreadable_dir(
+    dir: &Path,
+    run: impl FnOnce() -> std::process::Output,
+) -> Option<std::process::Output> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let original = fs::metadata(dir).unwrap().permissions();
+    let _guard = RestoreMode { dir, original: original.clone() };
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(dir).is_ok() {
+        return None;
+    }
+    Some(run())
+}
+
+/// The message a chmod-000 test prints when it skips.
+#[cfg(unix)]
+fn skip_not_denied(test: &str) {
+    eprintln!("{test}: skipped -- mode 000 does not deny this user (running as root?)");
+}
+
+#[cfg(unix)]
+#[test]
+fn list_warns_and_continues_past_an_unreadable_directory() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    init_repo(root.path(), "github.com/a/x", false);
+    init_repo(root.path(), "github.com/b/y", false);
+    let locked = root.path().join("locked");
+    fs::create_dir_all(locked.join("deep")).unwrap();
+
+    let Some(out) = with_unreadable_dir(&locked, || {
+        let mut cmd = Command::cargo_bin("scap").unwrap();
+        isolated(&mut cmd, home.path(), root.path());
+        cmd.arg("list").output().unwrap()
+    }) else {
+        skip_not_denied("list_warns_and_continues_past_an_unreadable_directory");
+        return;
+    };
+
+    // AC-8b: exit 0, the readable part of the tree listed in full, and the
+    // skipped path named on stderr under default settings -- no log
+    // variable, so this is the WARN subscriber scap always builds.
+    assert!(out.status.success(), "expected exit 0, got {:?}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "github.com/a/x\ngithub.com/b/y\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Permission denied"), "stderr: {stderr}");
+    assert!(stderr.contains(&locked.display().to_string()), "stderr: {stderr}");
+}
+
+#[test]
+fn list_skips_a_non_existent_root_without_a_word() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    let missing = root.path().join("not-created");
+
+    let mut cmd = Command::cargo_bin("scap").unwrap();
+    isolated(&mut cmd, home.path(), root.path());
+    let out = cmd.env("SCAP_ROOT", &missing).arg("list").output().unwrap();
+
+    assert!(out.status.success(), "expected exit 0, got {:?}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn list_warns_and_skips_an_unreadable_root() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    let locked = root.path().join("locked");
+    fs::create_dir_all(&locked).unwrap();
+
+    let Some(out) = with_unreadable_dir(&locked, || {
+        let mut cmd = Command::cargo_bin("scap").unwrap();
+        isolated(&mut cmd, home.path(), root.path());
+        cmd.env("SCAP_ROOT", &locked).arg("list").output().unwrap()
+    }) else {
+        skip_not_denied("list_warns_and_skips_an_unreadable_root");
+        return;
+    };
+
+    assert!(out.status.success(), "expected exit 0, got {:?}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Permission denied"), "stderr: {stderr}");
+    assert!(stderr.contains(&locked.display().to_string()), "stderr: {stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn list_warns_and_skips_a_root_whose_stat_fails_for_another_reason() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    let locked = root.path().join("locked");
+    let inner = locked.join("inner");
+    fs::create_dir_all(&inner).unwrap();
+
+    // `stat(<locked>/inner)` fails with EACCES rather than ENOENT because
+    // the parent cannot be searched. ghq dereferences a nil `FileInfo`
+    // there and panics, so this expectation is scap's own (ADR-13).
+    let Some(out) = with_unreadable_dir(&locked, || {
+        let mut cmd = Command::cargo_bin("scap").unwrap();
+        isolated(&mut cmd, home.path(), root.path());
+        cmd.env("SCAP_ROOT", &inner).arg("list").output().unwrap()
+    }) else {
+        skip_not_denied("list_warns_and_skips_a_root_whose_stat_fails_for_another_reason");
+        return;
+    };
+
+    assert!(out.status.success(), "expected exit 0, got {:?}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Permission denied"), "stderr: {stderr}");
+    assert!(stderr.contains(&inner.display().to_string()), "stderr: {stderr}");
+}
+
+#[test]
+fn list_warns_and_skips_a_root_below_a_regular_file() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    let file = root.path().join("file");
+    fs::write(&file, "not a directory\n").unwrap();
+    let below = file.join("dir");
+
+    // The W0.4 oracle fixture for ADR-9 (vi)'s third case: `stat` fails
+    // with ENOTDIR. ghq panics on it (`local_repository.go:321`, nil
+    // `FileInfo`), so scap's behaviour is asserted directly rather than
+    // against the oracle (ADR-13).
+    let mut cmd = Command::cargo_bin("scap").unwrap();
+    isolated(&mut cmd, home.path(), root.path());
+    let out = cmd.env("SCAP_ROOT", &below).arg("list").output().unwrap();
+
+    assert!(out.status.success(), "expected exit 0, got {:?}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(&below.display().to_string()), "stderr: {stderr}");
+    assert!(stderr.contains("Not a directory"), "stderr: {stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn list_is_silent_about_a_dangling_symlink_by_default() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    init_repo(root.path(), "github.com/a/x", false);
+    // `follow_links(true)` resolves every symlink's metadata, so a link to
+    // a file that no longer exists is a walk error. ghq prints nothing for
+    // it, and one stale link would otherwise put a line on every run, so
+    // rule (v) reserves stderr for permission errors and sends the rest to
+    // the debug level. W2b.2's `follow_links(false)` removes the class.
+    symlink(root.path().join("github.com/a/x/gone.txt"), root.path().join("dangling")).unwrap();
+
+    let mut quiet = Command::cargo_bin("scap").unwrap();
+    isolated(&mut quiet, home.path(), root.path());
+    let quiet = quiet.arg("list").output().unwrap();
+
+    assert!(quiet.status.success(), "expected exit 0, got {:?}", quiet.status);
+    assert_eq!(String::from_utf8_lossy(&quiet.stdout), "github.com/a/x\n");
+    assert_eq!(
+        String::from_utf8_lossy(&quiet.stderr),
+        "",
+        "a dangling symlink must not reach stderr under default settings"
+    );
+
+    // Non-silent, though: `SCAP_LOG=debug` still names it.
+    let mut loud = Command::cargo_bin("scap").unwrap();
+    isolated(&mut loud, home.path(), root.path());
+    let loud = loud.env("SCAP_LOG", "debug").arg("list").output().unwrap();
+
+    assert!(loud.status.success(), "expected exit 0, got {:?}", loud.status);
+    assert_eq!(String::from_utf8_lossy(&loud.stdout), "github.com/a/x\n");
+    let stderr = String::from_utf8_lossy(&loud.stderr);
+    assert!(stderr.contains("dangling"), "stderr: {stderr}");
+    assert!(stderr.contains("No such file or directory"), "stderr: {stderr}");
 }

@@ -22,6 +22,10 @@ clap = { version = "4", features = ["derive"] }
 # `sha1`/`sha256` is selected, and both crates forward the flag to gix-ref.
 gix-config = { version = "0.60", features = ["sha1"] }
 gix-discover = { version = "0.55", features = ["sha1"] }
+# ADR-9 rule (viii): `scap.listExclude` patterns are matched with git's own
+# wildmatch. Already in the tree through gix-config; named here because
+# src/cmd/list.rs calls it directly.
+gix-glob = "0.27"
 gix-url = "0.37"
 # Decision D-1: the stale-tmp liveness probe is `kill(pid, 0)` through
 # rustix's safe wrapper instead of a `kill -0` subprocess. Only the `process`

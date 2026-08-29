@@ -995,6 +995,7 @@ dependencies = [
  "clap",
  "gix-config",
  "gix-discover",
+ "gix-glob",
  "gix-url",
  "jwalk",
  "predicates",

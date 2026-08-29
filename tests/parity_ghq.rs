@@ -564,3 +564,90 @@ fn list_prunes_nested_repo_matches_ghq() {
         "nested repo pruning diverges"
     );
 }
+
+/// AC-8b: ADR-9 rule (v) against the real oracle.
+///
+/// Not `#[ignore]`d, unlike the rest of this file: it does not go through
+/// the shared `isolated()` helper (which W2b.2 repairs) but builds its own
+/// environment with both `GHQ_ROOT` and `SCAP_ROOT` set, so it is
+/// self-contained and can run in the default suite. It still skips when no
+/// oracle is configured, and `SCAP_REQUIRE_GHQ=1` turns that skip into a
+/// failure.
+#[test]
+#[cfg(unix)]
+fn unreadable_directory_is_skipped_like_ghq() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(ghq) = ghq_binary() else { return };
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    let cfg = home.path().join(".gitconfig");
+    fs::File::create(&cfg).unwrap();
+
+    for rel in ["github.com/a/x", "github.com/b/y"] {
+        init_repo(&root.path().join(rel));
+    }
+    let locked = root.path().join("locked");
+    init_repo(&locked.join("deep/hidden-repo"));
+
+    let base = [
+        ("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string()),
+        ("GIT_CONFIG_GLOBAL".to_string(), cfg.to_string_lossy().into_owned()),
+        ("HOME".to_string(), home.path().to_string_lossy().into_owned()),
+    ];
+    let root_value = root.path().to_string_lossy().into_owned();
+
+    // Restore the mode from a guard, so a panic below cannot leave a
+    // mode-000 directory behind in $TMPDIR for TempDir to choke on.
+    struct RestoreMode<'a>(&'a std::path::Path, fs::Permissions);
+    impl Drop for RestoreMode<'_> {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(self.0, self.1.clone());
+        }
+    }
+    let original = fs::metadata(&locked).unwrap().permissions();
+    let _guard = RestoreMode(&locked, original);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&locked).is_ok() {
+        eprintln!(
+            "unreadable_directory_is_skipped_like_ghq: skipped -- mode 000 does not deny \
+             this user (running as root?)"
+        );
+        return;
+    }
+
+    let ghq_out = Command::new(&ghq)
+        .arg("list")
+        .envs(base.iter().cloned())
+        .env("GHQ_ROOT", &root_value)
+        .env_remove("SCAP_ROOT")
+        .output()
+        .unwrap();
+    let scap_out = ScapCmd::cargo_bin("scap")
+        .unwrap()
+        .arg("list")
+        .envs(base.iter().cloned())
+        .env("SCAP_ROOT", &root_value)
+        .env_remove("GHQ_ROOT")
+        .env_remove("SCAP_LIST_EXCLUDE")
+        .env_remove("SCAP_LOG")
+        .env_remove("RUST_LOG")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        String::from_utf8_lossy(&ghq_out.stdout),
+        String::from_utf8_lossy(&scap_out.stdout),
+        "ghq list != scap list across an unreadable directory"
+    );
+    assert_eq!(ghq_out.status.code(), scap_out.status.code(), "exit status differs");
+    assert_eq!(scap_out.status.code(), Some(0));
+
+    // Both name the skipped path on stderr; only the decoration differs
+    // (ghq prints a coloured `warning` prefix, scap a `tracing` WARN line).
+    for (who, stderr) in [("ghq", &ghq_out.stderr), ("scap", &scap_out.stderr)] {
+        let stderr = String::from_utf8_lossy(stderr);
+        assert!(stderr.contains("Permission denied"), "{who} stderr: {stderr}");
+        assert!(stderr.contains(&locked.display().to_string()), "{who} stderr: {stderr}");
+    }
+}

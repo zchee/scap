@@ -377,6 +377,124 @@ else
   SELECTED_ROWS=("${DEFAULT_ROWS[@]}")
 fi
 
+# ---------------------------------------------------------------------------
+# Corpus inventory (recorded, never gated)
+# ---------------------------------------------------------------------------
+#
+# The corpora are live directories on the maintainer's machine, not fixtures.
+# Between the 2026-08-28 freeze and W2b.1 corpus a gained four repositories
+# and two owner directories, so a run that does not say what it walked cannot
+# honestly be compared with one taken a week earlier. Every row set that
+# touches a corpus now records what was actually there, next to the frozen
+# reference, in metadata.json.
+#
+# One `scap list` per corpus, before the timed rows, so the inventory never
+# runs between two hyperfine invocations.
+#
+# `dirs_read` is NOT comparable across walkers and no drift should be read
+# from it: the W0.2 spike finds `.git` by reading a repository's directory,
+# while the jwalk walker finds it with a `stat` and never opens it, so the
+# spike counts one extra read per repository it opens (840 of its 841 on
+# corpus a -- the exception is a symlinked repository it emits without
+# descending, ADR-9 rule (iii)). `repos` is directly comparable and is the
+# drift signal; `repos_drift` reports it.
+INVENTORY="${SCAP_BENCH_INVENTORY:-auto}"
+INVENTORY_JSON='[]'
+
+# One `corpus|root|exclude|frozen_dirs_read|frozen_repos` line per corpus the
+# selected rows walk. The frozen figures are the W0.2 spike counters frozen
+# in the task ledger (#2) on 2026-08-28.
+inventory_specs() {
+  local want_a=0 want_b=0 want_aprime=0 row
+  for row in "${SELECTED_ROWS[@]}"; do
+    case "$row" in
+      list_aprime*) want_aprime=1 ;;
+      *list_ab*) want_a=1; want_b=1 ;;
+      *list_a*) want_a=1 ;;
+      *list_b*) want_b=1 ;;
+    esac
+  done
+  (( want_a )) && printf 'a|%s||17771|841\n' "$ROOT_A"
+  (( want_aprime )) && printf "a'|%s|%s|2036|841\n" "$ROOT_A" "${APRIME_EXCLUDE:-}"
+  (( want_b )) && printf 'b|%s||3589|981\n' "$ROOT_B"
+  return 0
+}
+
+# `scap list` on one corpus, reporting `repos` from stdout and the walk
+# counters from the `SCAP_LOG=debug` span close line. A binary older than
+# W2b.1 emits no `scap::walk::root` span, so both counters record as null
+# rather than failing the run.
+inventory_entry() {
+  local name="$1" root="$2" exclude="$3" fz_dirs="$4" fz_repos="$5"
+  local stdout_file stderr_file repos dirs excluded
+  stdout_file="$(mktemp "${TMPDIR:-/tmp}/scap-inv.XXXXXX")"
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/scap-inv.XXXXXX")"
+  if [[ -n "$exclude" ]]; then
+    SCAP_LOG=debug SCAP_ROOT="$root" SCAP_LIST_EXCLUDE="$exclude" \
+      "$SCAP_BIN" list >"$stdout_file" 2>"$stderr_file" || true
+  else
+    SCAP_LOG=debug SCAP_ROOT="$root" \
+      "$SCAP_BIN" list >"$stdout_file" 2>"$stderr_file" || true
+  fi
+  repos="$(wc -l < "$stdout_file" | tr -d ' ')"
+  # Quit at the first match inside sed rather than piping to `head -1`:
+  # under `pipefail` the SIGPIPE that `head` sends once it has its line
+  # makes the whole pipeline report failure.
+  dirs="$(sed -n '/dirs_read=/{s/.*dirs_read=\([0-9][0-9]*\).*/\1/p;q;}' "$stderr_file")"
+  excluded="$(sed -n '/excluded=/{s/.*excluded=\([0-9][0-9]*\).*/\1/p;q;}' "$stderr_file")"
+  rm -f "$stdout_file" "$stderr_file"
+
+  # shellcheck disable=SC2016 # single-quoted jq program; $vars are jq bindings
+  "$JQ_BIN" -n \
+    --arg corpus "$name" \
+    --arg root "$root" \
+    --arg exclude "$exclude" \
+    --arg repos "$repos" \
+    --arg dirs "${dirs:-}" \
+    --arg excluded "${excluded:-}" \
+    --arg fz_dirs "$fz_dirs" \
+    --arg fz_repos "$fz_repos" \
+    '{
+      corpus: $corpus,
+      root: $root,
+      exclude: (if $exclude == "" then null else $exclude end),
+      measured: {
+        repos: ($repos | tonumber),
+        dirs_read: (if $dirs == "" then null else ($dirs | tonumber) end),
+        excluded: (if $excluded == "" then null else ($excluded | tonumber) end)
+      },
+      frozen_2026_08_28: {
+        dirs_read: ($fz_dirs | tonumber),
+        repos: ($fz_repos | tonumber),
+        source: "W0.2 spike counters (ledger #2)"
+      },
+      repos_drift: (($repos | tonumber) - ($fz_repos | tonumber)),
+      note: "dirs_read is not comparable with the frozen figure across walkers; repos_drift is the drift signal"
+    }'
+}
+
+collect_inventory() {
+  local specs entries=() name root exclude fz_dirs fz_repos
+  specs="$(inventory_specs)"
+  [[ -z "$specs" ]] && return 0
+  while IFS='|' read -r name root exclude fz_dirs fz_repos; do
+    [[ -z "$name" ]] && continue
+    echo "==> [inventory] corpus $name ($root)" >&2
+    entries+=("$(inventory_entry "$name" "$root" "$exclude" "$fz_dirs" "$fz_repos")")
+  done <<< "$specs"
+  (( ${#entries[@]} == 0 )) && return 0
+  INVENTORY_JSON="$(printf '%s\n' "${entries[@]}" | "$JQ_BIN" -s '.')"
+}
+
+case "$INVENTORY" in
+  0) ;;
+  1 | auto) collect_inventory ;;
+  *)
+    echo "bench-quiet.sh: SCAP_BENCH_INVENTORY must be 0, 1 or auto (got '$INVENTORY')" >&2
+    exit 1
+    ;;
+esac
+
 for row in "${SELECTED_ROWS[@]}"; do
   fn="row_$row"
   if ! declare -F "$fn" >/dev/null; then
@@ -424,6 +542,7 @@ TOP_PROC_END="$SAMPLE_TOP"
   --arg runs "$RUNS" \
   --arg warmup "$WARMUP" \
   --arg forced "$FORCE" \
+  --argjson corpus_inventory "$INVENTORY_JSON" \
   '{
     git_head: $git_head,
     rustc: $rustc,
@@ -448,7 +567,8 @@ TOP_PROC_END="$SAMPLE_TOP"
     binary_sha256: $binary_sha256,
     runs: ($runs | tonumber),
     warmup: ($warmup | tonumber),
-    forced: ($forced == "1")
+    forced: ($forced == "1"),
+    corpus_inventory: $corpus_inventory
   }' > "$OUT/metadata.json"
 
 {

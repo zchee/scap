@@ -356,6 +356,55 @@ fn list_exclude_and_list_cache_are_read_from_flat_keys() {
 }
 
 #[test]
+fn scap_list_exclude_replaces_the_configured_patterns() {
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\tlistExclude = from-config\n");
+
+    // Set and non-empty: the variable is the whole exclusion set, the way
+    // `SCAP_ROOT` is the whole root list. Empty segments are dropped so a
+    // stray separator cannot introduce a pattern that matches nothing.
+    let mut env = f.env();
+    env.scap_list_exclude = Some("a/b::c".into());
+    assert_eq!(load_ok(&env).list_exclude(), ["a/b".to_owned(), "c".to_owned()]);
+
+    // Empty counts as unset, again as for `SCAP_ROOT`, so it is not a way
+    // to suppress a configured pattern.
+    let mut empty = f.env();
+    empty.scap_list_exclude = Some("".into());
+    assert_eq!(load_ok(&empty).list_exclude(), ["from-config".to_owned()]);
+
+    assert_eq!(load_ok(&f.env()).list_exclude(), ["from-config".to_owned()]);
+
+    // The two backends must agree: the override is folded in where the
+    // snapshot is built, not in one parser.
+    let mut via_git = f.env();
+    via_git.scap_list_exclude = Some("a/b::c".into());
+    via_git.scap_config_backend = Some("git".into());
+    assert_eq!(load_ok(&via_git).list_exclude(), ["a/b".to_owned(), "c".to_owned()]);
+}
+
+#[test]
+fn list_exclude_folds_one_trailing_slash() {
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\tlistExclude = node_modules/\n\tlistExclude = /\n");
+
+    // `.gitignore` spells a directory with a trailing slash and every
+    // exclusion candidate is a directory, so the suffix carries nothing and
+    // is folded away rather than silently matching nothing. A pattern that
+    // is only that slash is dropped.
+    assert_eq!(load_ok(&f.env()).list_exclude(), ["node_modules".to_owned()]);
+
+    let mut via_env = f.env();
+    via_env.scap_list_exclude = Some("node_modules/:/:keep".into());
+    assert_eq!(load_ok(&via_env).list_exclude(), ["node_modules".to_owned(), "keep".to_owned()]);
+
+    // Only one slash goes: `foo//` still names an empty component.
+    let mut doubled = f.env();
+    doubled.scap_list_exclude = Some("foo//".into());
+    assert_eq!(load_ok(&doubled).list_exclude(), ["foo/".to_owned()]);
+}
+
+#[test]
 fn has_url_sections_and_url_scoped_roots_report_scap_subsections() {
     let f = Fixture::new();
     f.write("home/.gitconfig", "[scap]\n\troot = /plain\n");

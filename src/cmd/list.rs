@@ -1,11 +1,24 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use bstr::ByteSlice;
 use clap::Args;
-use jwalk::{DirEntry, Parallelism, WalkDirGeneric};
+use gix_glob::wildmatch;
+use jwalk::{DirEntry, Parallelism, ReadChildren, WalkDirGeneric};
 
 use crate::config;
+
+/// Size of the rayon pool each root is walked on.
+///
+/// Four is the thread count the W0.2 matrix selected for every walker
+/// variant on corpus a+b, and it is what this walker already used. Phase 3
+/// makes it configurable through `SCAP_LIST_THREADS`; until then it is a
+/// constant so the `threads` span field never reports a number the walk did
+/// not actually use.
+const WALK_THREADS: usize = 4;
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
@@ -118,22 +131,116 @@ fn walk_for_repos_with_seen(
     primary: Option<&Path>,
     seen: &mut HashSet<PathBuf>,
 ) -> anyhow::Result<()> {
-    if is_repo_path(root) {
-        maybe_push_repo(root.to_path_buf(), root, out, primary, seen);
+    if !root_is_walkable(root) {
         return Ok(());
     }
 
+    // ADR-9's instrumentation rule: a field `Span::record` will write later
+    // has to be declared at creation, or the write silently no-ops and the
+    // close line never carries it.
+    let span = tracing::debug_span!(
+        "scap::walk::root",
+        path = %root.display(),
+        dirs_read = tracing::field::Empty,
+        excluded = tracing::field::Empty,
+        repos = tracing::field::Empty,
+        threads = WALK_THREADS,
+    );
+    let _entered = span.enter();
+    let before = out.len();
+
+    if is_repo_path(root) {
+        maybe_push_repo(root.to_path_buf(), root, out, primary, seen);
+        span.record("dirs_read", 0usize);
+        span.record("excluded", 0usize);
+        span.record("repos", out.len() - before);
+        return Ok(());
+    }
+
+    // ADR-9's mechanics: `process_read_dir` is `Fn + Send + Sync + 'static`
+    // and runs on the rayon workers, so the counters are shared atomics
+    // rather than captured locals.
+    let dirs_read = Arc::new(AtomicUsize::new(0));
+    let excluded = Arc::new(AtomicUsize::new(0));
+    let (walk_dirs_read, walk_excluded) = (Arc::clone(&dirs_read), Arc::clone(&excluded));
+    // `&'static ConfigSnapshot`, so the patterns need no copy to outlive the
+    // closure.
+    let patterns: &'static [String] = config::snapshot().list_exclude();
+    let walk_root: Arc<Path> = Arc::from(root);
+
     let walker = WalkDirGeneric::<((), bool)>::new(root)
         .follow_links(true)
-        .parallelism(Parallelism::RayonNewPool(4))
+        .parallelism(Parallelism::RayonNewPool(WALK_THREADS))
         .skip_hidden(false)
         .sort(false)
-        .process_read_dir(|_, _, _, children| {
+        .process_read_dir(move |depth, dir_path, _, children| {
+            // jwalk calls this once before anything is read, with `depth`
+            // `None`, the walk root's *parent* as the path and the root
+            // itself as the only child. That call is not a directory read
+            // and must not be counted as one, and the root is not a
+            // candidate for exclusion (a pattern is matched against paths
+            // relative to it).
+            if depth.is_none() {
+                return;
+            }
+            walk_dirs_read.fetch_add(1, Ordering::Relaxed);
+
+            // The root-relative path of this directory, with the separator
+            // already appended, so each child costs a truncate and an
+            // extend rather than an allocation.
+            let mut rel = Vec::new();
+            let mut rel_is_root_relative = false;
+            if !patterns.is_empty() {
+                let stripped = dir_path.strip_prefix(&walk_root);
+                debug_assert!(
+                    stripped.is_ok(),
+                    "walk path {} is not under the walk root {}",
+                    dir_path.display(),
+                    walk_root.display()
+                );
+                // jwalk only ever reports paths under the root it was
+                // given. If that ever stopped holding, the exclusion test
+                // is skipped for this directory rather than falling back to
+                // the absolute path: patterns are anchored at the root, and
+                // matching them against `/Users/...` could silently exclude
+                // a subtree because of where the corpus happens to live.
+                if let Ok(prefix) = stripped {
+                    rel.extend_from_slice(prefix.as_os_str().as_encoded_bytes());
+                    if !rel.is_empty() {
+                        rel.push(b'/');
+                    }
+                    rel_is_root_relative = true;
+                }
+            }
+            let dir_len = rel.len();
+
             for child in children.iter_mut() {
                 let child = match child {
                     Ok(child) => child,
+                    // ADR-9 rule (v): this entry is skipped, and reported
+                    // from the walk iterator rather than here -- jwalk
+                    // yields every erroring child from there as well, so
+                    // reporting in both arms would print each problem
+                    // twice.
                     Err(_) => continue,
                 };
+
+                if !child.file_type().is_dir() {
+                    continue;
+                }
+
+                // ADR-9 rule (viii): an excluded directory is neither read
+                // nor emitted, and the test runs before the repository
+                // probe so an excluded subtree costs no `stat` either.
+                if rel_is_root_relative {
+                    rel.truncate(dir_len);
+                    rel.extend_from_slice(child.file_name.as_encoded_bytes());
+                    if is_excluded(patterns, &rel) {
+                        child.read_children = None;
+                        walk_excluded.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                }
 
                 if is_repo_dir_entry(child) {
                     child.read_children = None;
@@ -145,8 +252,22 @@ fn walk_for_repos_with_seen(
     for entry in walker {
         let entry = match entry {
             Ok(entry) => entry,
-            Err(_) => continue,
+            // ADR-9 rule (v): every child `process_read_dir` could not
+            // build reaches this arm too, so reporting here covers both of
+            // the walker's error paths exactly once. Exit status stays 0.
+            // Only a permission error is warned; see `report_walk_error`.
+            Err(err) => {
+                report_walk_error(&err);
+                continue;
+            }
         };
+
+        // A directory whose own `read_dir` failed never reaches
+        // `process_read_dir` -- jwalk hangs the error on the entry instead
+        // -- so rule (v)'s permission-denied case is reported from here.
+        if let Some(err) = entry.read_children.as_ref().and_then(ReadChildren::error) {
+            report_walk_error(err);
+        }
 
         if !entry.file_type().is_dir() || !entry.client_state {
             continue;
@@ -156,7 +277,122 @@ fn walk_for_repos_with_seen(
         maybe_push_repo(repo_root, root, out, primary, seen);
     }
 
+    span.record("dirs_read", dirs_read.load(Ordering::Relaxed));
+    span.record("excluded", excluded.load(Ordering::Relaxed));
+    span.record("repos", out.len() - before);
     Ok(())
+}
+
+/// ADR-9 rule (viii): whether `rel`, a root-relative path, matches any
+/// configured exclusion.
+///
+/// Patterns are matched against the whole root-relative path and are
+/// therefore anchored at the root: `foo` excludes `<root>/foo` and not
+/// `<root>/bar/foo`, and a pattern that is to reach further down says so
+/// (`*/foo`, or `**/foo`). `NO_MATCH_SLASH_LITERAL` is git's own
+/// `WM_PATHNAME`, under which `*` and `?` stop at a `/` while `**` crosses
+/// it -- the semantics a `.gitignore` reader already expects.
+///
+/// Matching is case-sensitive, as git's is: `IGNORE_CASE` is deliberately
+/// not set, so a pattern must use the on-disk spelling even on a
+/// case-insensitive filesystem such as the default APFS layout.
+fn is_excluded(patterns: &[String], rel: &[u8]) -> bool {
+    patterns.iter().any(|pattern| {
+        wildmatch(
+            pattern.as_bytes().as_bstr(),
+            rel.as_bstr(),
+            gix_glob::wildmatch::Mode::NO_MATCH_SLASH_LITERAL,
+        )
+    })
+}
+
+/// ADR-9 rule (vi): whether this root is worth handing to the walker.
+///
+/// A root that does not exist is skipped silently -- a `scap.root` naming a
+/// directory the user has not created yet is not an error, and ghq skips it
+/// the same way. A root that exists but cannot be read, and a root whose
+/// `stat` fails for any other reason, are skipped *with* a warning: they
+/// hide repositories that would otherwise be listed, so silence would make
+/// the shorter output look authoritative. (ghq dereferences a nil
+/// `FileInfo` in the third case and panics, so it cannot be the oracle for
+/// it -- registered in ADR-13.)
+fn root_is_walkable(root: &Path) -> bool {
+    match std::fs::metadata(root) {
+        Ok(meta) => {
+            if metadata_is_readable(&meta) {
+                return true;
+            }
+            tracing::warn!("{}: Permission denied", root.display());
+            false
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+        Err(err) => {
+            warn_unwalkable_root(root, &err);
+            false
+        }
+    }
+}
+
+/// ghq's `local_repository.go:310-318` readability test: any of the three
+/// read bits set.
+#[cfg(unix)]
+fn metadata_is_readable(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    meta.permissions().mode() & 0o444 != 0
+}
+
+#[cfg(not(unix))]
+fn metadata_is_readable(_meta: &std::fs::Metadata) -> bool {
+    true
+}
+
+/// ADR-9 rule (v): report an entry the walk could not read, then carry on.
+///
+/// The walk still exits 0 either way. A `list` that aborted on the first
+/// unreadable directory would be less useful than one that lists what it
+/// can and says what it skipped, which is what ghq does
+/// (`local_repository.go:301-306`).
+///
+/// Only a permission error reaches stderr by default, and it carries ghq's
+/// own wording rather than the OS string so it does not vary by platform.
+/// Everything else is a debug line: ghq prints nothing for those, and with
+/// `follow_links(true)` a single dangling symlink anywhere in a corpus --
+/// the maintainer's has one, a stale documentation link -- would otherwise
+/// put a line on every `scap list`, which teaches users to stop reading its
+/// stderr and so costs more than it reports. W2b.2's `follow_links(false)`
+/// removes that class of error from the walk entirely.
+fn report_walk_io_error(path: &Path, err: &io::Error) {
+    // Both EACCES and EPERM map to `PermissionDenied`.
+    if err.kind() == io::ErrorKind::PermissionDenied {
+        tracing::warn!("{}: Permission denied", path.display());
+    } else {
+        tracing::debug!("{}: {err}", path.display());
+    }
+}
+
+fn report_walk_error(err: &jwalk::Error) {
+    match (err.path(), err.io_error()) {
+        (Some(path), Some(io_err)) => report_walk_io_error(path, io_err),
+        // A symlink loop carries no `io::Error`. ghq is silent there too.
+        (Some(path), None) => tracing::debug!("{}: {err}", path.display()),
+        (None, _) => tracing::debug!("{err}"),
+    }
+}
+
+/// ADR-9 rule (vi): report a root the walk cannot use.
+///
+/// Unlike rule (v)'s per-entry errors this always warns, because a root
+/// scap cannot walk hides every repository beneath it rather than one
+/// entry, and the listing that results looks complete. ghq warns for the
+/// unreadable root as well; the non-ENOENT case is scap's own, since ghq
+/// panics there (ADR-13).
+fn warn_unwalkable_root(root: &Path, err: &io::Error) {
+    if err.kind() == io::ErrorKind::PermissionDenied {
+        tracing::warn!("{}: Permission denied", root.display());
+    } else {
+        tracing::warn!("{}: {err}", root.display());
+    }
 }
 
 fn maybe_push_repo(
