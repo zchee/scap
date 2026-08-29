@@ -77,11 +77,96 @@ if ! "$ENV_BIN" --version 2>/dev/null | grep -q 'GNU coreutils'; then
 fi
 
 mkdir -p "$OUT"
+OUT_REAL="$(cd "$OUT" && pwd -P)"
 
 # Fingerprint of the binary these rows measure (deviation D-4 item 2), so a
 # later reader can tell whether two runs measured the same program.
 BIN_SIZE_BYTES="$(wc -c < "$SCAP_BIN" | tr -d ' ')"
 BIN_SHA256="$(shasum -a 256 "$SCAP_BIN" | awk '{print $1}')"
+
+# ---------------------------------------------------------------------------
+# Foreign-hyperfine refusal (ledger #21b / #22 NOTES)
+# ---------------------------------------------------------------------------
+#
+# Two lanes measuring this host at once invalidates both, and the 2026-08-29
+# window proved the gate above cannot catch it: the CPU-idle clause admitted a
+# group while another lane's hyperfine was running, because one benchmark
+# process does not move a 16-core machine's idle figure far enough to fail an
+# 85 % floor. The rows were only identified as contaminated afterwards.
+#
+# The rule is ownership, not activity: this script's own hyperfine always
+# writes its `--export-json` under $OUT, so ANY hyperfine whose export path
+# lies outside this run's $OUT belongs to somebody else -- including a lane
+# exporting elsewhere under this same repository, which is exactly the case
+# the earlier `$REPO/docs/benchmarks/runs/` substring test could not separate.
+# A hyperfine with no `--export-json` at all cannot prove it is ours and counts
+# as foreign too.
+#
+# File mtimes are deliberately NOT used as an activity signal: restoring git
+# history rewrote older run directories onto disk mid-window once already, so
+# an mtime says nothing about who is measuring now.
+#
+# `pgrep -x` matches the executable name. `pgrep -f hyperfine` is wrong here:
+# it also matches this script's own shell whenever the word appears anywhere
+# on its command line, so the gate would flag itself.
+FOREIGN_SCANS=0
+
+# Prints one `pid<TAB>command` line per foreign hyperfine; empty when clean.
+# Counting the scan is the caller's job: this runs inside a command
+# substitution, so an increment here would be lost with the subshell.
+foreign_hyperfine_list() {
+  local pid args path path_dir path_real
+  while read -r pid; do
+    [[ -z "$pid" ]] && continue
+    args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+    [[ -z "$args" ]] && continue
+    path="$(printf '%s\n' "$args" | awk '
+      { for (i = 1; i <= NF; i++) {
+          if ($i == "--export-json" && i < NF) { print $(i + 1); exit }
+          if ($i ~ /^--export-json=/) { sub(/^--export-json=/, "", $i); print $i; exit }
+        } }')"
+    if [[ -n "$path" ]]; then
+      path_dir="$(dirname "$path")"
+      if [[ -d "$path_dir" ]]; then
+        path_real="$(cd "$path_dir" && pwd -P)/$(basename "$path")"
+      else
+        # An export directory that does not exist cannot be under our $OUT,
+        # which this script created before the first scan.
+        path_real="$path"
+      fi
+      [[ "$path_real" == "$OUT_REAL"/* ]] && continue
+    fi
+    printf '%s\t%s\n' "$pid" "$args"
+  done < <(pgrep -x hyperfine || true)
+}
+
+# Refuses the run when another lane is measuring. Not bypassed by
+# SCAP_BENCH_FORCE: forcing declares "I loaded this machine deliberately",
+# which is a statement about load, not a licence to measure on top of somebody
+# else's benchmark.
+assert_no_foreign_hyperfine() {
+  local where="$1" found
+  found="$(foreign_hyperfine_list)"
+  FOREIGN_SCANS=$(( FOREIGN_SCANS + 1 ))
+  [[ -z "$found" ]] && return 0
+  {
+    echo "bench-quiet.sh: refusing to run beside a foreign hyperfine ($where):"
+    printf '  - %s\n' "$found"
+    echo "A hyperfine whose --export-json is outside this run's OUT ($OUT_REAL)"
+    echo "belongs to another lane; both measurements would be contended."
+    echo "Discard this run directory and re-take the group once the host is free."
+  } >&2
+  # Label the directory rather than deleting it: a partial run dir that says
+  # why it was abandoned is evidence, and a reader who finds one later must
+  # not mistake it for a completed group.
+  {
+    printf 'Aborted %s: foreign hyperfine detected (%s).\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$where"
+    printf '%s\n' "$found"
+    printf 'These rows are contaminated and must not be reported.\n'
+  } >> "$OUT/CONTAMINATED"
+  exit 3
+}
 
 # ---------------------------------------------------------------------------
 # Quiet-machine preconditions
@@ -178,6 +263,10 @@ TOP_PROC_START=""
 check_preconditions() {
   local failures=()
 
+  # Before the 15 s of CPU sampling, so a contended host is refused
+  # immediately rather than after the gate has paid for its samples.
+  assert_no_foreign_hyperfine "start-of-run gate"
+
   sample_cpu_median3
   IDLE_START="$SAMPLE_IDLE"
   TOP_PROC_START="$SAMPLE_TOP"
@@ -216,7 +305,9 @@ check_preconditions() {
 if [[ "$FORCE" != "1" ]]; then
   check_preconditions
 else
-  # Forced (loaded-machine rows): record the same numbers without gating.
+  # Forced (loaded-machine rows): record the same numbers without gating. The
+  # foreign-hyperfine clause still applies -- see assert_no_foreign_hyperfine.
+  assert_no_foreign_hyperfine "start-of-run gate (forced)"
   sample_cpu
   IDLE_START="$SAMPLE_IDLE"
   TOP_PROC_START="$SAMPLE_TOP"
@@ -278,12 +369,18 @@ run_bench() {
   local cmd
   cmd="$(join_cmd "$@")"
   echo "==> [$name] $cmd" >&2
+  # Watchdog on both sides of the row: before, so a lane that started while
+  # the previous row ran cannot contend with this one; after, so a lane that
+  # started DURING this row marks it contaminated instead of letting a
+  # contended measurement reach summary.md.
+  assert_no_foreign_hyperfine "before row $name"
   "$HYPERFINE_BIN" -N \
     --warmup "$WARMUP" \
     --runs "$RUNS" \
     --export-json "$OUT/$name.json" \
     --command-name "$name" \
     "$cmd"
+  assert_no_foreign_hyperfine "after row $name"
   RAN_ROWS+=("$name")
 }
 
@@ -542,6 +639,8 @@ TOP_PROC_END="$SAMPLE_TOP"
   --arg runs "$RUNS" \
   --arg warmup "$WARMUP" \
   --arg forced "$FORCE" \
+  --arg foreign_scans "$FOREIGN_SCANS" \
+  --arg out_real "$OUT_REAL" \
   --argjson corpus_inventory "$INVENTORY_JSON" \
   '{
     git_head: $git_head,
@@ -568,6 +667,12 @@ TOP_PROC_END="$SAMPLE_TOP"
     runs: ($runs | tonumber),
     warmup: ($warmup | tonumber),
     forced: ($forced == "1"),
+    foreign_hyperfine: {
+      out_dir: $out_real,
+      scans: ($foreign_scans | tonumber),
+      detected: [],
+      rule: "any hyperfine whose --export-json is outside out_dir is foreign; a detection aborts the run with exit 3 and writes OUT/CONTAMINATED, so a completed metadata.json always reports an empty list"
+    },
     corpus_inventory: $corpus_inventory
   }' > "$OUT/metadata.json"
 
