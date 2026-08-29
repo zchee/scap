@@ -74,6 +74,25 @@ row_list_ab_stat_t2() { row_detect_at list_ab_stat_t2 "$ROOT_AB" stat 2; }
 row_list_ab_stat_t4() { row_detect_at list_ab_stat_t4 "$ROOT_AB" stat 4; }
 row_list_ab_stat_t8() { row_detect_at list_ab_stat_t8 "$ROOT_AB" stat 8; }
 
+# --- Thread sweep on the shipped default -----------------------------------
+#
+# The sweep above pins a strategy on the command so the two arms of the W3.0b
+# comparison are spelled the same way. Once a default is frozen, the sweep
+# that re-derives `N*` for the shipped program must instead set *only* the
+# thread count and let the default stand, or it measures a configuration no
+# user runs.
+
+row_threads_at() {
+  local name="$1" rootval="$2" threads="$3"
+  run_bench "$name" "$ENV_BIN" "SCAP_ROOT=$rootval" "SCAP_LIST_THREADS=$threads" \
+    "$SCAP_BIN" list
+}
+
+row_list_ab_t1() { row_threads_at list_ab_t1 "$ROOT_AB" 1; }
+row_list_ab_t2() { row_threads_at list_ab_t2 "$ROOT_AB" 2; }
+row_list_ab_t4() { row_threads_at list_ab_t4 "$ROOT_AB" 4; }
+row_list_ab_t8() { row_threads_at list_ab_t8 "$ROOT_AB" 8; }
+
 # --- AC-6 startup guard ----------------------------------------------------
 #
 # Same definition as extra-rows-phase-2.sh's, repeated so a Phase-3 group can
