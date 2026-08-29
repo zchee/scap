@@ -91,7 +91,7 @@ cargo codspeed build -m simulation # compile the same benches instrumented
 scripts/bench-fixture.sh           # generate target/bench-fixture for codspeed.yaml
 ```
 
-Simulation mode is Linux-only, so on macOS the local check is that the benches build and run as plain divan; the instrumented numbers come from CI. Two things have to be done by hand before CodSpeed reports anything: enable `zchee/scap` on codspeed.io, and add the `CODSPEED_TOKEN` repository secret it hands back. Uploading a run from a developer machine additionally needs `codspeed auth login`.
+Simulation mode is Linux-only, so on macOS the local check is that the benches build and run as plain divan; the instrumented numbers come from CI. One thing has to be done by hand before CodSpeed reports anything: enable `zchee/scap` on codspeed.io; the workflow authenticates with OpenID Connect, so no `CODSPEED_TOKEN` secret is needed. Uploading a run from a developer machine additionally needs `codspeed auth login`.
 
 ## License
 

@@ -20,9 +20,11 @@
 # are not comparable to each other. What CodSpeed adds is the per-commit
 # history the quiet-machine runs cannot produce.
 #
-# Two things have to be done by hand before this workflow reports anything:
-# enable zchee/scap on codspeed.io, and add the CODSPEED_TOKEN repository
-# secret it hands back.
+# One thing has to be done by hand before this workflow reports anything:
+# enable zchee/scap on codspeed.io. Authentication is OpenID Connect
+# (`id-token: write` on each job), so no CODSPEED_TOKEN secret is needed;
+# pull requests from forks, which get neither secrets nor the OIDC
+# permission, fall back to CodSpeed's tokenless validation.
 name: CodSpeed
 
 on:
@@ -47,8 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # OpenID Connect authentication with CodSpeed, which is what lets the
-      # token below be optional on a public repository.
+      # OpenID Connect authentication with CodSpeed; no repository token.
       id-token: write
     steps:
       - uses: actions/checkout@v5
@@ -79,7 +80,6 @@ jobs:
         with:
           mode: simulation
           run: cargo codspeed run
-          token: ${{ secrets.CODSPEED_TOKEN }}
 
   walltime:
     name: Walltime (whole-program exec harness)
@@ -113,4 +113,3 @@ jobs:
         uses: CodSpeedHQ/action@v5
         with:
           mode: walltime
-          token: ${{ secrets.CODSPEED_TOKEN }}
