@@ -22,14 +22,18 @@ impl Drop for EnvGuard {
     }
 }
 
+#[expect(unsafe_code, reason = "test-only env mutation, removed in W2.1 by the ADR-8 Env view")]
 fn set_env(key: &str, value: impl AsRef<std::ffi::OsStr>) {
-    // SAFETY: tests using EnvGuard are tagged #[serial], so this access
-    // is serialized at the harness level.
+    // SAFETY: every test that reaches this helper is tagged `#[serial]`, so
+    // `serial_test` serialises them against one another and no other thread
+    // reads or writes the environment while this call runs.
     unsafe { std::env::set_var(key, value) };
 }
 
+#[expect(unsafe_code, reason = "test-only env mutation, removed in W2.1 by the ADR-8 Env view")]
 fn unset_env(key: &str) {
-    // SAFETY: serialized via #[serial].
+    // SAFETY: as in `set_env` -- `#[serial]` serialises every caller, so this
+    // is the only thread touching the environment for the duration.
     unsafe { std::env::remove_var(key) };
 }
 
@@ -184,4 +188,67 @@ fn clean_path_normalizes_parent_and_current() {
     assert_eq!(clean_path(Path::new("/a/b/../c")), pb("/a/c"));
     assert_eq!(clean_path(Path::new("/a/./b")), pb("/a/b"));
     assert_eq!(clean_path(Path::new("./relative")), pb("relative"));
+}
+
+#[test]
+#[serial]
+fn git_config_get_path_returns_the_single_value_for_a_key() {
+    let _g = setup("[scap]\n\troot = /p/one\n\tuser = zchee\n");
+
+    assert_eq!(git_config_get_path("scap.root").unwrap(), Some("/p/one".to_owned()));
+    assert_eq!(git_config_get_path("scap.user").unwrap(), Some("zchee".to_owned()));
+}
+
+#[test]
+#[serial]
+fn git_config_get_path_expands_a_leading_tilde_against_home() {
+    // `--path` is not decoration: it is what makes `~/src` in a gitconfig mean
+    // the same directory to scap as it does to git. `setup()` points HOME at
+    // the temp dir, so the expansion is checked against a known value.
+    let _g = setup("[scap]\n\troot = ~/nested\n");
+    let home = std::env::var("HOME").expect("HOME set by setup()");
+
+    let got = git_config_get_path("scap.root").unwrap().expect("key is present");
+    assert_eq!(got, format!("{home}/nested"));
+}
+
+#[test]
+#[serial]
+fn git_config_get_path_returns_none_for_an_absent_key() {
+    let _g = setup("[scap]\n\troot = /p/one\n");
+
+    assert_eq!(git_config_get_path("scap.definitelyAbsent").unwrap(), None);
+}
+
+#[test]
+#[serial]
+fn git_config_get_all_path_returns_every_value_in_file_order() {
+    // File order, not the reversed order `resolve_roots` applies afterwards:
+    // the reversal is that caller's rule, not this accessor's.
+    let _g = setup("[scap]\n\troot = /a\n\troot = /b\n\troot = /c\n");
+
+    assert_eq!(
+        git_config_get_all_path("scap.root").unwrap(),
+        vec!["/a".to_owned(), "/b".to_owned(), "/c".to_owned()]
+    );
+}
+
+#[test]
+#[serial]
+fn git_config_get_all_path_expands_each_value_and_drops_blank_lines() {
+    let _g = setup("[scap]\n\troot = ~/one\n\troot = /two\n");
+    let home = std::env::var("HOME").expect("HOME set by setup()");
+
+    let got = git_config_get_all_path("scap.root").unwrap();
+
+    assert_eq!(got, vec![format!("{home}/one"), "/two".to_owned()]);
+    assert!(got.iter().all(|v| !v.is_empty()), "blank lines must be filtered out: {got:?}");
+}
+
+#[test]
+#[serial]
+fn git_config_get_all_path_returns_an_empty_vec_for_an_absent_key() {
+    let _g = setup("[scap]\n\troot = /a\n");
+
+    assert!(git_config_get_all_path("scap.definitelyAbsent").unwrap().is_empty());
 }

@@ -38,12 +38,50 @@ if [[ ! -x "$SCAP_BIN" ]]; then
   echo "bench-quiet.sh: SCAP_BIN=$SCAP_BIN is not an executable file (build with: cargo build --release)" >&2
   exit 1
 fi
+# ---------------------------------------------------------------------------
+# Build-flag regime (plan §6a deviation D-4)
+# ---------------------------------------------------------------------------
+#
+# Every Phase-0 binary was built under a global RUSTFLAGS exported by the
+# maintainer's login shell, so every frozen §9 absolute is valid only against
+# binaries built with that exact string. The string below is the one the
+# benchmark panes export -- verified 2026-08-29: reproduces the Phase-0 `scap`
+# binary sha256 fe0dc41e49abad1b5592aed6c56537583b8289cdc83660a2bc94d871bb91ca51
+# exactly (2,517,856 B, __TEXT 1,884,160 B). Plan §6a deviation D-4 recorded a
+# different string ("-C target-cpu=native ... -C panic=abort ..."); that was the
+# lead session's own bash value, a transcription error, corrected in the plan
+# alongside this change. A run whose RUSTFLAGS differs is measuring a different
+# program and is refused unless the caller says otherwise.
+FROZEN_RUSTFLAGS='-C target-cpu=apple-m3 -C target-feature=+neon -C opt-level=3 -C codegen-units=1 -C force-frame-pointers=on -C embed-bitcode=yes -Z dylib-lto -Z mir-opt-level=4 -Z inline-mir=yes -C llvm-args=-unroll-threshold=500 -C llvm-args=-enable-dfa-jump-thread -C link-arg=-Wl,-dead_strip'
+CURRENT_RUSTFLAGS="${RUSTFLAGS:-}"
+ALLOW_FLAGS="${SCAP_BENCH_ALLOW_FLAGS:-0}"
+
+if [[ "$CURRENT_RUSTFLAGS" != "$FROZEN_RUSTFLAGS" ]]; then
+  if [[ "$ALLOW_FLAGS" != "1" ]]; then
+    {
+      echo "bench-quiet.sh: RUSTFLAGS does not match the regime frozen in plan §6a deviation D-4."
+      echo "  frozen:  $FROZEN_RUSTFLAGS"
+      echo "  current: ${CURRENT_RUSTFLAGS:-<unset>}"
+      echo "The §9 absolutes are only valid against binaries built with the frozen string, so a"
+      echo "run under different flags does not satisfy the criterion it claims to."
+      echo "Set SCAP_BENCH_ALLOW_FLAGS=1 to record the run anyway (metadata.json marks it)."
+    } >&2
+    exit 1
+  fi
+  echo "bench-quiet.sh: RUSTFLAGS differs from the D-4 regime; recording anyway (SCAP_BENCH_ALLOW_FLAGS=1)." >&2
+fi
+
 if ! "$ENV_BIN" --version 2>/dev/null | grep -q 'GNU coreutils'; then
   echo "bench-quiet.sh: \$ENV_BIN ($ENV_BIN) must be GNU env (needs -C/-u); found: $("$ENV_BIN" --version 2>&1 | head -n1)" >&2
   exit 1
 fi
 
 mkdir -p "$OUT"
+
+# Fingerprint of the binary these rows measure (deviation D-4 item 2), so a
+# later reader can tell whether two runs measured the same program.
+BIN_SIZE_BYTES="$(wc -c < "$SCAP_BIN" | tr -d ' ')"
+BIN_SHA256="$(shasum -a 256 "$SCAP_BIN" | awk '{print $1}')"
 
 # ---------------------------------------------------------------------------
 # Quiet-machine preconditions
@@ -377,6 +415,12 @@ TOP_PROC_END="$SAMPLE_TOP"
   --arg os_version "$(sw_vers -productVersion)" \
   --arg os_build "$(sw_vers -buildVersion)" \
   --arg cpu_brand "$(sysctl -n machdep.cpu.brand_string)" \
+  --arg rustflags "$CURRENT_RUSTFLAGS" \
+  --arg rustflags_frozen "$FROZEN_RUSTFLAGS" \
+  --arg allow_flags "$ALLOW_FLAGS" \
+  --arg binary "$SCAP_BIN" \
+  --arg binary_size_bytes "$BIN_SIZE_BYTES" \
+  --arg binary_sha256 "$BIN_SHA256" \
   --arg runs "$RUNS" \
   --arg warmup "$WARMUP" \
   --arg forced "$FORCE" \
@@ -395,6 +439,13 @@ TOP_PROC_END="$SAMPLE_TOP"
     },
     os: { name: $os_name, version: $os_version, build: $os_build },
     cpu_brand: $cpu_brand,
+    rustflags: $rustflags,
+    rustflags_frozen: $rustflags_frozen,
+    rustflags_match: ($rustflags == $rustflags_frozen),
+    allow_flags: ($allow_flags == "1"),
+    binary: $binary,
+    binary_size_bytes: ($binary_size_bytes | tonumber),
+    binary_sha256: $binary_sha256,
     runs: ($runs | tonumber),
     warmup: ($warmup | tonumber),
     forced: ($forced == "1")

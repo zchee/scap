@@ -4,7 +4,31 @@ use std::process::Command;
 use assert_cmd::Command as ScapCmd;
 use tempfile::TempDir;
 
+/// True when `GHQ_BINARY` names a file the current user can execute.
+fn ghq_binary_is_executable() -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(p) = std::env::var_os("GHQ_BINARY") else {
+        return false;
+    };
+    std::fs::metadata(std::path::PathBuf::from(p))
+        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
 fn ghq_binary() -> Option<std::path::PathBuf> {
+    // Plan §5 "Oracle presence": V-4 exports both variables, so under
+    // SCAP_REQUIRE_GHQ=1 a missing oracle is a hard failure rather than a
+    // silent skip -- otherwise the whole parity suite passes vacuously during
+    // verification. A developer who exports neither still gets the skip.
+    if std::env::var("SCAP_REQUIRE_GHQ").as_deref() == Ok("1") && !ghq_binary_is_executable() {
+        panic!(
+            "SCAP_REQUIRE_GHQ=1 demands a ghq oracle, but GHQ_BINARY is unset or does not name \
+             an executable file (GHQ_BINARY={:?}). Export GHQ_BINARY=$(command -v ghq), or unset \
+             SCAP_REQUIRE_GHQ to let these tests skip.",
+            std::env::var_os("GHQ_BINARY")
+        );
+    }
+
     if let Ok(p) = std::env::var("GHQ_BINARY") {
         let pb = std::path::PathBuf::from(p);
         if pb.exists() {

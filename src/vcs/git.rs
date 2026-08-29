@@ -162,3 +162,7 @@ fn pid_is_alive(pid: i32) -> bool {
 fn pid_is_alive(_pid: i32) -> bool {
     true
 }
+
+#[cfg(test)]
+#[path = "git_tests.rs"]
+mod tests;

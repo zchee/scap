@@ -18,3 +18,7 @@ pub(crate) fn is_not_exist_or_empty(path: &Path) -> anyhow::Result<bool> {
         Err(e) => Err(anyhow::Error::from(e).context(format!("inspect {}", path.display()))),
     }
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

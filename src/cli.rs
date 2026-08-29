@@ -117,3 +117,7 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Cmd::Create(args) => crate::cmd::create::run(&args),
     }
 }
+
+#[cfg(test)]
+#[path = "cli_tests.rs"]
+mod tests;

@@ -197,6 +197,5 @@ fn clean_path(p: &std::path::Path) -> PathBuf {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "config_tests.rs"]
 mod tests;

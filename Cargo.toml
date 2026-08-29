@@ -32,6 +32,19 @@ predicates = { version = "3", default-features = false }
 serial_test = { version = "4", default-features = false }
 tempfile = { version = "3", default-features = false }
 
+# ADR-11 bounded-unsafe policy. The shipped walker took the B2 (`rustix`)
+# path, so the crate holds no `unsafe` at all and no `allow(unsafe_code)`
+# site exists in product code; these denials are what keeps that true as the
+# walker is written. `undocumented_unsafe_blocks` is the gate that enforces
+# `// SAFETY:` coverage, so no grep clause is needed for it in V-2.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+
 [profile.release]
 opt-level = 3
 lto = "fat"

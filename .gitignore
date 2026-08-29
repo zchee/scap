@@ -23,3 +23,6 @@ rustc-ice-*.txt
 # Local agent/benchmark artifacts (kept on disk, not tracked)
 .omx/
 .codex/
+
+# Python bytecode from the benchmark analysis scripts under scripts/
+__pycache__/
