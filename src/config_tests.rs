@@ -384,6 +384,48 @@ fn scap_list_exclude_replaces_the_configured_patterns() {
 }
 
 #[test]
+fn scap_list_cache_overrides_the_configured_key() {
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\tlistCache = true\n");
+    assert!(load_ok(&f.env()).list_cache(), "the configured key on its own");
+
+    // Non-empty and false-ish: the variable replaces the configured value
+    // outright, which is what makes `SCAP_LIST_CACHE=0 scap list` a way to
+    // turn a configured index off for one command without a flag.
+    let mut off = f.env();
+    off.scap_list_cache = Some("0".into());
+    assert!(!load_ok(&off).list_cache(), "the variable turns a configured index off");
+
+    // Empty counts as unset, as it does for `SCAP_ROOT` and
+    // `SCAP_LIST_EXCLUDE`, so it is not a second way to suppress the key.
+    let mut empty = f.env();
+    empty.scap_list_cache = Some("".into());
+    assert!(load_ok(&empty).list_cache(), "an empty variable leaves the key alone");
+
+    // git's `--bool` truthiness, in both directions and in both spellings.
+    let plain = Fixture::new();
+    plain.write("home/.gitconfig", "[scap]\n\tuser = x\n");
+    assert!(!load_ok(&plain.env()).list_cache(), "unconfigured and unset");
+    for value in ["1", "true", "yes", "on"] {
+        let mut on = plain.env();
+        on.scap_list_cache = Some(value.into());
+        assert!(load_ok(&on).list_cache(), "SCAP_LIST_CACHE={value}");
+    }
+    for value in ["0", "false", "no", "off", "nonsense"] {
+        let mut disabled = f.env();
+        disabled.scap_list_cache = Some(value.into());
+        assert!(!load_ok(&disabled).list_cache(), "SCAP_LIST_CACHE={value}");
+    }
+
+    // The two backends must agree: the override is folded in where the
+    // snapshot is built, not in one parser.
+    let mut via_git = f.env();
+    via_git.scap_list_cache = Some("0".into());
+    via_git.scap_config_backend = Some("git".into());
+    assert!(!load_ok(&via_git).list_cache(), "the git backend folds it in too");
+}
+
+#[test]
 fn list_exclude_folds_one_trailing_slash() {
     let f = Fixture::new();
     f.write("home/.gitconfig", "[scap]\n\tlistExclude = node_modules/\n\tlistExclude = /\n");

@@ -24,6 +24,9 @@ fn args(query: Option<&str>) -> ListArgs {
         full_path: false,
         unique: false,
         bare: false,
+        cache: false,
+        no_cache: false,
+        cache_check: false,
         query: query.map(str::to_owned),
     }
 }
@@ -384,7 +387,14 @@ fn walk_one_reports_the_repositories_under_a_root() {
     for rel in ["github.com/a/x", "github.com/b/y"] {
         std::fs::create_dir_all(tmp.path().join(rel).join(".git")).expect("repository fixture");
     }
-    let listing = walk_one(tmp.path(), &WalkOptions::new(2, Vec::new())).expect("walk");
+    let (listing, disagreed) = walk_one(
+        tmp.path(),
+        &WalkOptions::new(2, Vec::new()),
+        crate::index::Mode::Off,
+        &crate::index::Cache::in_dir(tmp.path().join("unused-cache")),
+    )
+    .expect("walk");
+    assert!(!disagreed, "Mode::Off never consults the index, so it cannot disagree with one");
     let mut found: Vec<String> =
         listing.repos().map(|r| String::from_utf8_lossy(r).into_owned()).collect();
     found.sort_unstable();

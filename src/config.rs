@@ -122,6 +122,7 @@ pub struct Env {
     pub git_ceiling_directories: Option<OsString>,
     pub scap_root: Option<OsString>,
     pub scap_list_exclude: Option<OsString>,
+    pub scap_list_cache: Option<OsString>,
     pub scap_config_backend: Option<OsString>,
     pub cwd: Option<PathBuf>,
     pub path: Option<OsString>,
@@ -152,6 +153,7 @@ impl Env {
             git_ceiling_directories: non_empty_var_os("GIT_CEILING_DIRECTORIES"),
             scap_root: std::env::var_os("SCAP_ROOT"),
             scap_list_exclude: std::env::var_os("SCAP_LIST_EXCLUDE"),
+            scap_list_cache: std::env::var_os("SCAP_LIST_CACHE"),
             scap_config_backend: std::env::var_os("SCAP_CONFIG_BACKEND"),
             cwd: std::env::current_dir().ok(),
             path: std::env::var_os("PATH"),
@@ -261,7 +263,17 @@ impl ConfigSnapshot {
         &self.list_exclude
     }
 
-    /// `scap.listCache`, for ADR-10 in Phase 4b.
+    /// Whether the ADR-10 repository index is enabled by configuration.
+    ///
+    /// `scap.listCache` with git's `--bool` truthiness, overridden wholesale
+    /// by a non-empty `SCAP_LIST_CACHE` -- the same relationship
+    /// `SCAP_LIST_EXCLUDE` has to `scap.listExclude`, so one variable on the
+    /// command line describes the whole decision and `SCAP_LIST_CACHE=0` can
+    /// turn a configured index off again. An empty or unset variable leaves
+    /// the configured value alone.
+    ///
+    /// `list --cache` and `list --no-cache` sit above both, and `--no-cache`
+    /// wins over everything (ADR-13).
     pub fn list_cache(&self) -> bool {
         self.list_cache
     }
@@ -611,6 +623,22 @@ fn normalize_exclude(pattern: &str) -> Option<String> {
     (!folded.is_empty()).then(|| folded.to_owned())
 }
 
+/// Fold `SCAP_LIST_CACHE` into the `scap.listCache` value parsed from the
+/// gitconfig.
+///
+/// A non-empty variable replaces the configured value outright and is read
+/// through [`git_boolean`], so the env spelling and the config spelling
+/// agree on what counts as true and an unparsable value reads as `false` in
+/// both (ADR-13). An empty variable counts as unset, as it does for
+/// `SCAP_ROOT` and `SCAP_LIST_EXCLUDE`, so `SCAP_LIST_CACHE= scap list` is
+/// not a way to suppress a configured key.
+fn effective_list_cache(env: &Env, from_config: bool) -> bool {
+    let Some(value) = env.scap_list_cache.as_ref().filter(|v| !v.is_empty()) else {
+        return from_config;
+    };
+    git_boolean(Some(value.as_encoded_bytes().as_bstr()))
+}
+
 fn from_file(file: Option<&gix_config::File>, env: &Env) -> ConfigSnapshot {
     let mut roots = Vec::new();
     let mut url_scoped_roots = Vec::new();
@@ -650,7 +678,7 @@ fn from_file(file: Option<&gix_config::File>, env: &Env) -> ConfigSnapshot {
         user,
         complete_user,
         list_exclude: effective_list_exclude(env, list_exclude),
-        list_cache,
+        list_cache: effective_list_cache(env, list_cache),
         backend: Backend::InProcess,
         reason,
         urlmatch: Default::default(),

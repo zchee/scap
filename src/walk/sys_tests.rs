@@ -159,6 +159,7 @@ fn a_walker_reads_a_tree_and_hands_back_what_it_found() {
         root: root_bytes,
         exclude: &[],
         detect: DetectStrategy::OpenScan,
+        record: false,
         live_fds: &live_fds,
         fd_cap: crate::walk::FD_CAP,
     };
@@ -194,4 +195,26 @@ fn a_walker_reads_a_tree_and_hands_back_what_it_found() {
     );
     assert_eq!(out.excluded, 0);
     assert_eq!(live_fds.load(Ordering::Relaxed), 0, "every queued descriptor is handed back");
+}
+
+/// The predicate that decides whether a failed read shortened the listing,
+/// and so whether ADR-10's index may be written from it.
+///
+/// Pinned as a table because the risk here is a later, entirely reasonable
+/// simplification. `LOOP` is demonstrably redundant on Darwin — with
+/// `O_DIRECTORY` alongside `O_NOFOLLOW` a symlink comes back `ENOTDIR`, so
+/// removing `LOOP` keeps every test on this platform green — while on Linux
+/// `O_NOFOLLOW` answers `ELOOP` for the same case, and dropping it there
+/// freezes the index permanently for anyone holding a symlinked repository
+/// whose target has lost its `.git`: the `openat` fails identically on every
+/// future run and no mtime ever moves to break the cycle. The listing stays
+/// correct throughout, so nothing else would notice.
+#[test]
+fn only_a_subtree_that_exists_and_went_unread_shortens_the_listing() {
+    for benign in [Errno::NOENT, Errno::NOTDIR, Errno::LOOP] {
+        assert!(!drops_a_subtree(benign), "{benign:?}: the path is not there to read");
+    }
+    for lost in [Errno::ACCESS, Errno::PERM, Errno::IO, Errno::MFILE, Errno::NFILE] {
+        assert!(drops_a_subtree(lost), "{lost:?}: a subtree that exists went unread");
+    }
 }

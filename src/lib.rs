@@ -3,6 +3,9 @@
 pub mod cli;
 pub mod cmd;
 pub mod config;
+// ADR-10's index is an implementation detail of `list`: it exports nothing
+// public, and `pub` here would publish an empty page in the rendered docs.
+pub(crate) mod index;
 pub mod path;
 pub mod url;
 pub mod vcs;

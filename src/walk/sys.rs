@@ -31,7 +31,7 @@ use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags};
 use rustix::io::Errno;
 
 use super::arena::Arena;
-use super::{DetectStrategy, Pattern};
+use super::{DetectStrategy, Pattern, Record};
 
 /// Flags for every directory the walk opens *below* the root.
 ///
@@ -173,16 +173,59 @@ pub(crate) struct Out {
     pub(crate) arena: Arena,
     pub(crate) dirs_read: usize,
     pub(crate) excluded: usize,
+    /// ADR-10's index entries, empty unless the walk was asked to record
+    /// them. Exactly one per path the walk decided about — a directory it
+    /// read, or a repository it emitted, never both — which is the set the
+    /// index has to `statat` on the next run.
+    pub(crate) records: Vec<Record>,
+    /// Whether any directory or subtree was dropped rather than walked.
+    ///
+    /// A permission error, an exhausted descriptor table or an I/O failure
+    /// leaves the listing short, which the walk has always warned about. What
+    /// ADR-10 adds is that a short walk must not be *persisted* as a complete
+    /// one: an index built from it would validate its surviving entries
+    /// happily and keep reproducing the shortened listing until something
+    /// moved a directory's mtime. Set at every site that drops a subtree,
+    /// read by `Cache::store`, which then writes nothing.
+    pub(crate) incomplete: bool,
+    /// Whether [`Out::emit`] and [`Walker::read_dir`] append to `records`.
+    record: bool,
 }
 
 impl Out {
+    /// An output that records ADR-10 index entries as it goes, or one that
+    /// does not.
+    pub(crate) fn new(record: bool) -> Self {
+        Self { record, ..Self::default() }
+    }
+
     /// Records one repository at root-relative path `rel`.
     ///
     /// A root that is itself a repository has an empty relative path and is
     /// printed as `.`, which is what ghq prints for it
     /// (`local_repository.go:54`).
+    ///
+    /// The index entry keeps the *unsubstituted* `rel`, because that is what
+    /// the validation pass hands to `statat` relative to the root
+    /// descriptor; only the printed listing gets the `.`.
     pub(crate) fn emit(&mut self, rel: &[u8]) {
         self.arena.push(if rel.is_empty() { b"." } else { rel });
+        if self.record {
+            self.records.push(Record::repo(rel));
+        }
+    }
+
+    /// Records that a directory or subtree was dropped instead of walked.
+    fn note_incomplete(&mut self) {
+        self.incomplete = true;
+    }
+
+    /// Records one directory the walk read and rule (i) did not turn into a
+    /// repository, with the mtime the index validates it by.
+    fn note_dir(&mut self, rel: &[u8], mtime_ns: i64) {
+        if self.record {
+            self.records.push(Record::dir(rel, mtime_ns));
+        }
     }
 
     /// Folds another worker's output into this one.
@@ -190,10 +233,12 @@ impl Out {
     /// This is where the counters are summed, which is why they are plain
     /// integers: each worker owns its own, so the per-entry path never
     /// touches an atomic.
-    pub(crate) fn merge(&mut self, other: &Out) {
+    pub(crate) fn merge(&mut self, other: &mut Out) {
         self.arena.merge(&other.arena);
         self.dirs_read += other.dirs_read;
         self.excluded += other.excluded;
+        self.incomplete |= other.incomplete;
+        self.records.append(&mut other.records);
     }
 }
 
@@ -206,6 +251,10 @@ pub(crate) struct Ctx<'a> {
     pub(crate) exclude: &'a [Pattern],
     /// Which of the two `.git` detection strategies to use (deviation D-6).
     pub(crate) detect: DetectStrategy,
+    /// Whether this walk is building an ADR-10 index as it goes. Recording
+    /// costs one `fstat` per directory read and nothing per repository, and
+    /// is off for every walk whose result is only printed.
+    pub(crate) record: bool,
     /// Descriptors currently parked in the work queue, across all workers.
     pub(crate) live_fds: &'a AtomicUsize,
     /// The value of `live_fds` past which queued directories carry a path
@@ -239,7 +288,7 @@ impl<'a> Walker<'a> {
             buf: EntryBuf::default(),
             name_z: Vec::new(),
             rel: Vec::new(),
-            out: Out::default(),
+            out: Out::new(ctx.record),
         }
     }
 
@@ -284,10 +333,14 @@ impl<'a> Walker<'a> {
                             abs(self.ctx.root, &job.rel),
                             std::io::Error::from(err)
                         );
+                        self.out.note_incomplete();
                         return;
                     }
                     Err(err) => {
                         report_io_error(self.ctx.root, &job.rel, err);
+                        if drops_a_subtree(err) {
+                            self.out.note_incomplete();
+                        }
                         return;
                     }
                 }
@@ -308,8 +361,27 @@ impl<'a> Walker<'a> {
             Ok(dir) => dir,
             Err(err) => {
                 report_io_error(self.ctx.root, rel, err);
+                if drops_a_subtree(err) {
+                    self.out.note_incomplete();
+                }
                 return;
             }
+        };
+        // ADR-10's mtime is read *before* the entry list, off a descriptor the
+        // walk already holds. The order is the correctness argument: a
+        // directory changed between the two reads carries a timestamp newer
+        // than the one recorded here, so the next run sees a mismatch and
+        // re-walks it. Reading it afterwards would pair the new timestamp with
+        // the old entry list, which is the one way this index could produce a
+        // false hit. A failed `fstat` records [`NEVER_VALID`], which no
+        // observed mtime can equal.
+        let recorded_mtime = if self.ctx.record {
+            match dir.fd().and_then(rustix::fs::fstat) {
+                Ok(stat) => mtime_ns(&stat),
+                Err(_) => NEVER_VALID,
+            }
+        } else {
+            NEVER_VALID
         };
         while let Some(entry) = dir.read() {
             match entry {
@@ -324,6 +396,7 @@ impl<'a> Walker<'a> {
                 // `dirs_read`, exactly as a failed open is.
                 Err(err) => {
                     report_io_error(self.ctx.root, rel, err);
+                    self.out.note_incomplete();
                     return;
                 }
             }
@@ -333,6 +406,7 @@ impl<'a> Walker<'a> {
             // practice; skipping the directory is still better than a panic
             // in a command whose whole job is to print what it can.
             tracing::debug!("{}: directory stream lost its descriptor", abs(self.ctx.root, rel));
+            self.out.note_incomplete();
             return;
         };
         self.out.dirs_read += 1;
@@ -345,6 +419,12 @@ impl<'a> Walker<'a> {
             self.out.emit(rel);
             return;
         }
+        // Only here, and not before rule (i): a directory that turned out to
+        // be a repository is a repository entry and nothing else. Recording
+        // both would put two entries under one path in the index, and which
+        // of them survived the build's de-duplication would decide whether
+        // the repository is listed at all on the next run.
+        self.out.note_dir(rel, recorded_mtime);
 
         // Split borrows: the entry name borrows `buf` while the two scratch
         // buffers are written, and the three are separate fields.
@@ -402,8 +482,10 @@ impl<'a> Walker<'a> {
                         out.emit(relbuf);
                         continue;
                     }
-                    if queue_child(ctx, dirfd, name, relbuf, name_z, children) {
-                        out.emit(relbuf);
+                    match queue_child(ctx, dirfd, name, relbuf, name_z, children) {
+                        Child::Repository => out.emit(relbuf),
+                        Child::Settled => {}
+                        Child::Dropped => out.note_incomplete(),
                     }
                 }
                 Kind::Symlink => {
@@ -453,6 +535,36 @@ impl<'a> Walker<'a> {
     }
 }
 
+/// The mtime a directory entry carries when the walk could not read one.
+///
+/// No filesystem timestamp reaches it, so an entry holding it can never
+/// validate and its subtree is read afresh every run — the safe direction
+/// for a cache whose only failure mode worth fearing is a false hit.
+pub(crate) const NEVER_VALID: i64 = i64::MIN;
+
+/// One `stat`'s modification time as nanoseconds since the Unix epoch.
+///
+/// `i64` nanoseconds spans 1678–2262, which covers every timestamp a
+/// filesystem can hold without the 16 bytes a 128-bit count would add to
+/// every index entry. The two saturating steps are what keep a filesystem
+/// reporting a nonsense timestamp from wrapping into a *plausible* one: a
+/// saturated value simply never matches, so the entry is re-walked.
+pub(crate) fn mtime_ns(stat: &rustix::fs::Stat) -> i64 {
+    let secs = widen(stat.st_mtime).unwrap_or(NEVER_VALID);
+    let nsecs = widen(stat.st_mtime_nsec).unwrap_or(0);
+    secs.saturating_mul(1_000_000_000).saturating_add(nsecs)
+}
+
+/// A `stat` timestamp field widened to `i64`.
+///
+/// `time_t` and the nanosecond field differ in width and signedness across
+/// the unixes scap builds for — already `i64` on the two this ships on, `i32`
+/// on a 32-bit target — so the conversion has to be written generically or it
+/// is either a lint on one platform or a truncation on another.
+fn widen<T: TryInto<i64>>(value: T) -> Option<i64> {
+    value.try_into().ok()
+}
+
 /// Rule (i)/(iv): does this directory's entry list make it a repository?
 ///
 /// `.git` as a directory, a gitfile, or anything else the filesystem could
@@ -477,9 +589,10 @@ fn is_repo_dir(buf: &EntryBuf, dirfd: BorrowedFd<'_>) -> bool {
 
 /// Opens a child directory and queues it, or settles it without opening.
 ///
-/// Returns `true` when the child turned out to be a repository the walk must
-/// emit without reading — the one case where opening it was not possible and
-/// not necessary.
+/// See [`Child`] for the three outcomes. The one worth naming here is
+/// [`Child::Repository`]: a child the walk could not open but whose `.git`
+/// stats is a repository it must emit without reading, which is the one case
+/// where opening it was neither possible nor necessary.
 fn queue_child(
     ctx: &Ctx<'_>,
     dirfd: BorrowedFd<'_>,
@@ -487,16 +600,16 @@ fn queue_child(
     rel: &[u8],
     name_z: &mut Vec<u8>,
     children: &mut Vec<Job>,
-) -> bool {
+) -> Child {
     if ctx.live_fds.load(Ordering::Relaxed) >= ctx.fd_cap {
         children.push(Job { fd: None, rel: rel.to_vec() });
-        return false;
+        return Child::Settled;
     }
     match rustix::fs::openat(dirfd, cstr(name_z, &[name]), CHILD_OFLAGS, Mode::empty()) {
         Ok(fd) => {
             ctx.live_fds.fetch_add(1, Ordering::Relaxed);
             children.push(Job { fd: Some(fd), rel: rel.to_vec() });
-            false
+            Child::Settled
         }
         // The descriptor budget is a self-imposed bound; these two are the
         // real one arriving early, from a low `RLIMIT_NOFILE` or from the
@@ -505,7 +618,7 @@ fn queue_child(
         // dropping the subtree here would silently shorten the listing.
         Err(Errno::MFILE | Errno::NFILE) => {
             children.push(Job { fd: None, rel: rel.to_vec() });
-            false
+            Child::Settled
         }
         // Reading a directory needs its read bit; `stat`ping through it needs
         // only its search bit. ghq never opens a candidate — it stats
@@ -521,16 +634,81 @@ fn queue_child(
         Err(err @ (Errno::ACCESS | Errno::PERM)) => {
             if rustix::fs::statat(dirfd, cstr(name_z, &[name, b"/.git"]), AtFlags::empty()).is_ok()
             {
-                return true;
+                return Child::Repository;
             }
             report_io_error(ctx.root, rel, err);
-            false
+            Child::Dropped
         }
         Err(err) => {
             report_io_error(ctx.root, rel, err);
-            false
+            if drops_a_subtree(err) { Child::Dropped } else { Child::Settled }
         }
     }
+}
+
+/// What [`queue_child`] did with one child directory.
+///
+/// Three outcomes rather than a boolean, because ADR-10 needs to tell the two
+/// falsehoods apart: a child handed to the queue leaves a complete walk, and
+/// a child dropped after an error does not. The distinction used to be
+/// invisible — both returned `false` — and an index written from the second
+/// would have recorded a short listing as the whole truth.
+enum Child {
+    /// Rule (i)/(iv) decided it from outside: the directory could not be
+    /// opened but `<dir>/.git` stats, which is the mode-0111 repository ghq
+    /// lists too.
+    Repository,
+    /// Handed to the queue, or gone from the tree between the `readdir` and
+    /// the `openat`. Either way the walk lost nothing: a name that is no
+    /// longer there contributes nothing to a listing of what *is* there, and
+    /// its removal already moved this directory's mtime.
+    Settled,
+    /// Neither read nor queued, and it exists. The listing is short by this
+    /// subtree, the walk has said so on stderr, and no index may be written
+    /// from this walk.
+    Dropped,
+}
+
+/// Whether an error that stopped the walk reading a path left the listing
+/// *short*, as opposed to correctly empty.
+///
+/// Three errors mean "there is nothing here to read", and nothing was
+/// dropped when the walk declines to read it. `ENOENT` is a path deleted
+/// since it was seen. `ENOTDIR` is one replaced by a non-directory. `ELOOP`,
+/// against these flags, is not a symlink loop at all but the kernel saying
+/// "the last component is a symlink" — and the walk never descends a
+/// symlink, so declining it is rule (iii) working, not a loss. Each of the
+/// three is also self-announcing: the change that caused it happened inside
+/// the parent directory, which moved the parent's mtime, so the next
+/// validation pass re-reads it through the ordinary miss path.
+///
+/// Which of the last two a symlink produces is the platform's choice, and
+/// both have to be here for the same reason. `CHILD_OFLAGS` carries
+/// `O_DIRECTORY` as well as `O_NOFOLLOW`, and Linux reports `ELOOP` for a
+/// symlink under `O_NOFOLLOW` while Darwin reports `ENOTDIR` for one under
+/// `O_DIRECTORY` — measured, not assumed: on Darwin every symlink kind
+/// (to a directory, to a file, dangling) comes back `ENOTDIR` with these
+/// flags and `ELOOP` only without `O_DIRECTORY`. Excluding just one of the
+/// two would leave the other platform's index frozen for anyone holding a
+/// symlinked repository whose target has lost its `.git`, because that
+/// `openat` fails identically on every future run and no mtime ever moves
+/// to break the cycle.
+///
+/// Every other error means a subtree that does exist went unread — a
+/// permission denied, an I/O failure, an exhausted descriptor table — and
+/// only those may stop ADR-10's index being written.
+///
+/// Getting this backwards is expensive in a quiet way, which is why the
+/// exclusions are not simply "errors we can ignore": treating `ENOENT` as a
+/// loss would suppress the index rewrite on every run that merely found a
+/// repository deleted. The listing stays correct throughout, so the damage
+/// would be invisible.
+///
+/// The accepted cost is on the other side: a genuine too-many-symbolic-links
+/// failure on an *intermediate* component is read as benign here and does not
+/// mark the walk short. That is rare, and it is the deliberate trade.
+fn drops_a_subtree(err: Errno) -> bool {
+    !matches!(err, Errno::NOENT | Errno::NOTDIR | Errno::LOOP)
 }
 
 /// ADR-9 rule (viii): whether `rel` matches any configured exclusion.

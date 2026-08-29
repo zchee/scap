@@ -6,8 +6,8 @@ use std::time::Instant;
 use clap::Args;
 use memchr::{memchr, memmem, memrchr_iter};
 
-use crate::config;
 use crate::walk::{self, Pattern, RootListing, WalkOptions};
+use crate::{config, index};
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
@@ -33,6 +33,24 @@ pub struct ListArgs {
     /// matches ghq's behavior where --bare only changes URL-query normalization).
     #[arg(long)]
     pub bare: bool,
+
+    /// Answer from the mtime-validated repository index where it is still
+    /// valid, and write it back (ADR-10). Overrides `scap.listCache`.
+    #[arg(long)]
+    pub cache: bool,
+
+    /// Never read or write the repository index. Wins over `--cache`,
+    /// `scap.listCache` and `SCAP_LIST_CACHE`. Cannot be combined with
+    /// `--cache-check`, which has to read the index to check it.
+    #[arg(long)]
+    pub no_cache: bool,
+
+    /// Walk every root afresh, compare the result with what the repository
+    /// index claims, print any difference on stderr and exit 1. Runs whether
+    /// or not the index is enabled, and rewrites it from the fresh walk, so a
+    /// run that reports a difference also repairs it.
+    #[arg(long, conflicts_with = "no_cache")]
+    pub cache_check: bool,
 
     /// Optional query string.
     pub query: Option<String>,
@@ -79,11 +97,24 @@ pub fn run(args: &ListArgs) -> anyhow::Result<()> {
         config::snapshot().list_exclude().iter().map(|p| Pattern::new(p)).collect(),
     );
 
+    // ADR-10: whether the index is consulted at all is one decision for the
+    // whole command, taken before the first root is touched, so a multi-root
+    // listing cannot answer one root from a cache and another from a walk.
+    // `--no-cache` and `--cache-check` cannot both be set: clap rejects the
+    // pair as a usage error, because a check against an index the same
+    // command line forbids reading has no honest meaning.
+    let mode =
+        index::mode(args.cache, args.no_cache, args.cache_check, config::snapshot().list_cache());
+
     // Rule (vii): roots are walked in order and never deduplicated against
     // each other, so a repository two roots both hold is printed twice.
+    let cache = index::Cache::from_env();
     let mut listings = Vec::with_capacity(roots.len());
+    let mut index_disagreed = false;
     for root in &roots {
-        listings.push(walk_one(root, &opts)?);
+        let (listing, disagreed) = walk_one(root, &opts, mode, &cache)?;
+        index_disagreed |= disagreed;
+        listings.push(listing);
     }
 
     // ADR-9's instrumentation rule again: every field a `Span::record` will
@@ -146,7 +177,14 @@ pub fn run(args: &ListArgs) -> anyhow::Result<()> {
     span.record("format_us", micros((named - started) + (formatted - filtered) + (done - sorted)));
     drop(_entered);
 
-    write_stdout(&buf)
+    // The listing is printed before the verdict either way: `--cache-check`
+    // prints what a fresh walk found, so its stdout is correct even on the
+    // run that reports the index wrong, and only the exit status differs.
+    write_stdout(&buf)?;
+    if index_disagreed {
+        anyhow::bail!("the repository index disagrees with a fresh walk (differences above)");
+    }
+    Ok(())
 }
 
 /// Where one repository's absolute path sits in the shared buffer, and where
@@ -239,13 +277,23 @@ fn micros(elapsed: std::time::Duration) -> u64 {
     u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX)
 }
 
-/// Walks one root, recording ADR-9's counters on the `scap::walk::root` span.
+/// Lists one root, recording ADR-9's counters on the `scap::walk::root` span.
 ///
 /// The span is opened for every root the command was given, including one the
 /// walk turns out not to be able to read: a root that contributed nothing is
 /// exactly the case where the counters are worth having, and `dirs_read = 0`
-/// says so unambiguously.
-fn walk_one(root: &Path, opts: &WalkOptions) -> anyhow::Result<RootListing> {
+/// says so unambiguously. Under [`index::Mode::On`] that is also what a fully
+/// validated index looks like — no directory was read — and the nested
+/// `scap::index` span carries the hit and miss counts that say why.
+///
+/// The second return value is `true` only under [`index::Mode::Check`], and
+/// only when the index and the fresh walk disagreed about this root.
+fn walk_one(
+    root: &Path,
+    opts: &WalkOptions,
+    mode: index::Mode,
+    cache: &index::Cache,
+) -> anyhow::Result<(RootListing, bool)> {
     let span = tracing::debug_span!(
         "scap::walk::root",
         path = %root.display(),
@@ -256,11 +304,15 @@ fn walk_one(root: &Path, opts: &WalkOptions) -> anyhow::Result<RootListing> {
     );
     let _entered = span.enter();
 
-    let listing = walk::walk_root(root, opts)?;
+    let (listing, disagreed) = match mode {
+        index::Mode::Off => (walk::walk_root(root, opts)?, false),
+        index::Mode::On => (cache.list_root(root, opts)?, false),
+        index::Mode::Check => cache.check_root(root, opts)?,
+    };
     span.record("dirs_read", listing.dirs_read());
     span.record("excluded", listing.excluded());
     span.record("repos", listing.len());
-    Ok(listing)
+    Ok((listing, disagreed))
 }
 
 /// Appends `<root>/<rel>` to `sink`, the way `Path::join` would have rendered

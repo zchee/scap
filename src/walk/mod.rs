@@ -34,7 +34,8 @@ use rustix::io::Errno;
 
 use self::arena::Arena;
 use self::pool::MAX_THREADS;
-use self::sys::{Ctx, Out, Walker};
+pub(crate) use self::sys::mtime_ns;
+use self::sys::{Ctx, Job, Out, Walker};
 
 /// Worker threads a walk uses unless the caller says otherwise.
 ///
@@ -55,6 +56,13 @@ pub const DEFAULT_THREADS: usize = 4;
 /// single-component one. The W0.2 spike never reached the cap on corpora a, b
 /// or a+b at any thread count.
 const FD_CAP: usize = 4096;
+
+/// Flags for the root's own descriptors.
+///
+/// `NOFOLLOW` is deliberately absent, unlike the child flags in `sys.rs`: a
+/// root reached through a symlink is a root the user named on purpose, and
+/// ghq resolves roots before walking them.
+const ROOT_OFLAGS: OFlags = OFlags::RDONLY.union(OFlags::DIRECTORY).union(OFlags::CLOEXEC);
 
 /// Which of the two `.git` detection strategies the walk uses.
 ///
@@ -180,6 +188,12 @@ impl Pattern {
         Self { text: pattern.as_bytes().into() }
     }
 
+    /// The pattern's own bytes, as ADR-10's index stores them to notice that
+    /// the exclusion set has changed since it was written.
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.text
+    }
+
     /// Whether `rel`, a root-relative path, is excluded by this pattern.
     ///
     /// Git's own wildmatch under `WM_PATHNAME`: `*` and `?` stop at a `/`
@@ -205,13 +219,70 @@ pub struct WalkOptions {
     pub exclude: Vec<Pattern>,
     /// Which `.git` detection strategy to use (deviation D-6).
     pub detect: DetectStrategy,
+    /// Whether the walk records ADR-10 index entries as it goes.
+    ///
+    /// Off for a listing that is only printed: recording costs one `fstat`
+    /// per directory read plus one owned path per entry, which a walk whose
+    /// answer nobody will reuse has no reason to pay.
+    pub record: bool,
 }
 
 impl WalkOptions {
     /// Options for a walk on `threads` workers excluding `exclude`, with the
-    /// detection strategy the environment selects.
+    /// detection strategy the environment selects and no index recording.
     pub fn new(threads: usize, exclude: Vec<Pattern>) -> Self {
-        Self { threads, exclude, detect: detect_strategy_from_env() }
+        Self { threads, exclude, detect: detect_strategy_from_env(), record: false }
+    }
+
+    /// The same options with index recording turned on or off.
+    pub(crate) fn with_record(mut self, record: bool) -> Self {
+        self.record = record;
+        self
+    }
+}
+
+/// One entry ADR-10's index remembers about a walk.
+///
+/// A *directory* entry carries the mtime the next run validates it by:
+/// unchanged mtime means the directory's entry list is unchanged, so its
+/// `.git` presence and its child set are unchanged too. A *repository* entry
+/// carries no timestamp at all, because a repository's own mtime moves every
+/// time anything in its working tree does while the only question the index
+/// asks about it — is `.git` still there — is answered exactly by one
+/// `statat`. Validating repositories by mtime instead would mark most of a
+/// working corpus stale on every run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Record {
+    rel: Box<[u8]>,
+    mtime_ns: Option<i64>,
+}
+
+impl Record {
+    /// A directory entry, validated by `mtime_ns`.
+    pub(crate) fn dir(rel: &[u8], mtime_ns: i64) -> Self {
+        Self { rel: rel.into(), mtime_ns: Some(mtime_ns) }
+    }
+
+    /// A repository entry, validated by its `.git` rather than by a
+    /// timestamp.
+    pub(crate) fn repo(rel: &[u8]) -> Self {
+        Self { rel: rel.into(), mtime_ns: None }
+    }
+
+    /// The entry's root-relative path; empty for the root itself.
+    pub(crate) fn rel(&self) -> &[u8] {
+        &self.rel
+    }
+
+    /// The directory mtime in nanoseconds since the Unix epoch, or `None`
+    /// for a repository entry.
+    pub(crate) fn mtime_ns(&self) -> Option<i64> {
+        self.mtime_ns
+    }
+
+    /// Whether this entry is a repository the walk emitted.
+    pub(crate) fn is_repo(&self) -> bool {
+        self.mtime_ns.is_none()
     }
 }
 
@@ -226,6 +297,8 @@ pub struct RootListing {
     arena: Arena,
     dirs_read: usize,
     excluded: usize,
+    records: Vec<Record>,
+    incomplete: bool,
 }
 
 impl RootListing {
@@ -263,8 +336,74 @@ impl RootListing {
         self.excluded
     }
 
+    /// Every ADR-10 index entry the walk recorded, empty unless
+    /// [`WalkOptions::record`] was set.
+    ///
+    /// Order follows the scheduling of the walk, so callers that need a
+    /// tree sort it; the index builder does exactly that.
+    pub(crate) fn records(&self) -> &[Record] {
+        &self.records
+    }
+
+    /// Takes the recorded index entries, consuming the listing.
+    pub(crate) fn into_records(self) -> Vec<Record> {
+        self.records
+    }
+
+    /// Whether any directory or subtree was dropped instead of walked.
+    ///
+    /// A listing can be short for reasons the walk warns about but cannot fix
+    /// — an unreadable directory, an exhausted descriptor table, an I/O error
+    /// — and the caller usually does not care, because the warning already
+    /// went to stderr. ADR-10's index does care: a short walk persisted as a
+    /// complete one would be validated happily on every later run and would
+    /// keep reproducing the short listing, silently, until some directory's
+    /// mtime moved. `Cache::store` therefore writes nothing when this is set.
+    pub(crate) fn incomplete(&self) -> bool {
+        self.incomplete
+    }
+
+    /// Rebuilds a listing from index entries rather than from a walk.
+    ///
+    /// ADR-10's validation pass produces repositories it never walked to,
+    /// and they have to reach `list`'s post-processing through the same type
+    /// the walk produces or the two paths could print differently. A
+    /// repository entry *is* a repository, so the repository set is derived
+    /// here rather than carried separately — one source of truth for both
+    /// the listing and the index that gets written back.
+    ///
+    /// `dirs_read`, `excluded` and `incomplete` describe only the directories
+    /// this run actually read, which on a fully validated index is none.
+    pub(crate) fn from_records(
+        records: Vec<Record>,
+        dirs_read: usize,
+        excluded: usize,
+        incomplete: bool,
+    ) -> Self {
+        let mut arena = Arena::default();
+        for record in records.iter().filter(|record| record.is_repo()) {
+            arena.push(if record.rel().is_empty() { b"." } else { record.rel() });
+        }
+        Self { arena, dirs_read, excluded, records, incomplete }
+    }
+
+    /// An empty listing from a walk that could not start.
+    ///
+    /// Distinct from [`RootListing::default`], which is a root that really
+    /// held nothing: this one is a root the walk could not open, and the
+    /// difference is exactly what stops an index being written from it.
+    fn unreadable() -> Self {
+        Self { incomplete: true, ..Self::default() }
+    }
+
     fn from_out(out: Out) -> Self {
-        Self { arena: out.arena, dirs_read: out.dirs_read, excluded: out.excluded }
+        Self {
+            arena: out.arena,
+            dirs_read: out.dirs_read,
+            excluded: out.excluded,
+            records: out.records,
+            incomplete: out.incomplete,
+        }
     }
 }
 
@@ -317,7 +456,7 @@ pub(crate) fn walk_root_capped(
     // repository, prints `.` and is never opened. The test is on the name's
     // bytes, so a root whose name is not valid UTF-8 is treated like any
     // other (the previous walker decoded it first and so missed this case).
-    let mut out = Out::default();
+    let mut out = Out::new(opts.record);
     if root.file_name().is_some_and(|name| name.as_bytes().ends_with(b".git")) {
         out.emit(b"");
         return Ok(RootListing::from_out(out));
@@ -329,19 +468,18 @@ pub(crate) fn walk_root_capped(
     // Neither is opened `NOFOLLOW`: a root reached through a symlink is one
     // the user named deliberately, and ghq resolves roots before walking
     // them.
-    let root_oflags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-    let base_fd = match rustix::fs::openat(CWD, root_c.as_c_str(), root_oflags, Mode::empty()) {
+    let base_fd = match rustix::fs::openat(CWD, root_c.as_c_str(), ROOT_OFLAGS, Mode::empty()) {
         Ok(fd) => fd,
         Err(err) => {
             warn_unwalkable_root(root_bytes, err);
-            return Ok(RootListing::default());
+            return Ok(RootListing::unreadable());
         }
     };
-    let read_fd = match rustix::fs::openat(CWD, root_c.as_c_str(), root_oflags, Mode::empty()) {
+    let read_fd = match rustix::fs::openat(CWD, root_c.as_c_str(), ROOT_OFLAGS, Mode::empty()) {
         Ok(fd) => fd,
         Err(err) => {
             warn_unwalkable_root(root_bytes, err);
-            return Ok(RootListing::default());
+            return Ok(RootListing::unreadable());
         }
     };
 
@@ -350,6 +488,7 @@ pub(crate) fn walk_root_capped(
         root: root_bytes,
         exclude: &opts.exclude,
         detect: opts.detect,
+        record: opts.record,
         live_fds: &live_fds,
         fd_cap,
     };
@@ -367,11 +506,78 @@ pub(crate) fn walk_root_capped(
     // returns its own output and the merge sums them, which is also where
     // the counters are added up.
     if !queue.is_empty() {
-        for part in pool::run(&ctx, base_fd.as_fd(), queue, opts.threads) {
-            out.merge(&part);
+        for mut part in pool::run(&ctx, base_fd.as_fd(), queue, opts.threads) {
+            out.merge(&mut part);
         }
     }
 
+    Ok(RootListing::from_out(out))
+}
+
+/// Re-walks a set of root-relative subtrees, as ADR-10's index does when
+/// validation finds an entry stale.
+///
+/// Each `rel` is read exactly as the walk would have read it on the way down
+/// from `root` — same entry rules, same exclusions, same detection strategy —
+/// and everything beneath it is walked. The paths that come back are already
+/// root-relative, because the reader is told the prefix it is standing on.
+///
+/// The whole batch is seeded into one pool run rather than walked one
+/// subtree at a time: a tree with one busy directory and forty quiet ones
+/// otherwise walks the busy one on a single thread while the rest of the
+/// pool idles.
+///
+/// `rel` must name a path the index recorded, which the entry rules only ever
+/// produce for a directory that was read or a repository that was emitted. A
+/// `rel` that no longer resolves contributes nothing and is not warned about:
+/// the seed is opened by `Walker::run`, whose `ENOENT` reaches
+/// `report_io_error` and comes out as a debug line rather than a warning, and
+/// which leaves the listing complete rather than short. That is right and not
+/// merely convenient — a recorded path that has since been deleted is the
+/// ordinary case the re-walk exists to notice, and treating it as a loss
+/// would both shout about every removed repository and stop the index being
+/// rewritten afterwards. A `rel` that does resolve but cannot be read is a
+/// different thing: it is warned about exactly as it would be mid-walk, and
+/// it marks the listing incomplete so no index is written from it.
+pub(crate) fn walk_subtrees(
+    root: &Path,
+    rels: &[Vec<u8>],
+    opts: &WalkOptions,
+) -> Result<RootListing, WalkError> {
+    if rels.is_empty() {
+        return Ok(RootListing::default());
+    }
+    let root_bytes = root.as_os_str().as_bytes();
+    let root_c = CString::new(root_bytes).map_err(|source| WalkError::InvalidRoot {
+        path: String::from_utf8_lossy(root_bytes).into_owned(),
+        source,
+    })?;
+    let base_fd = match rustix::fs::openat(CWD, root_c.as_c_str(), ROOT_OFLAGS, Mode::empty()) {
+        Ok(fd) => fd,
+        Err(err) => {
+            warn_unwalkable_root(root_bytes, err);
+            return Ok(RootListing::unreadable());
+        }
+    };
+
+    let live_fds = AtomicUsize::new(0);
+    let ctx = Ctx {
+        root: root_bytes,
+        exclude: &opts.exclude,
+        detect: opts.detect,
+        record: opts.record,
+        live_fds: &live_fds,
+        fd_cap: FD_CAP,
+    };
+    // Every seed carries a path rather than a descriptor: the walk is
+    // starting part-way down and there is no parent descriptor to inherit,
+    // which is the case `Job::fd == None` already exists for.
+    let queue: Vec<Job> = rels.iter().map(|rel| Job { fd: None, rel: rel.clone() }).collect();
+
+    let mut out = Out::new(opts.record);
+    for mut part in pool::run(&ctx, base_fd.as_fd(), queue, opts.threads) {
+        out.merge(&mut part);
+    }
     Ok(RootListing::from_out(out))
 }
 

@@ -19,6 +19,7 @@ fn options(detect: DetectStrategy, exclude: &[&str]) -> WalkOptions {
         threads: DEFAULT_THREADS,
         exclude: exclude.iter().copied().map(Pattern::new).collect(),
         detect,
+        record: false,
     }
 }
 
@@ -592,7 +593,7 @@ fn the_repository_set_does_not_depend_on_the_worker_count() {
             if detect == DetectStrategy::OpenScan { open_reads } else { stat_reads };
         let mut baseline: Option<Vec<String>> = None;
         for threads in [1, 2, 4, 16] {
-            let opts = WalkOptions { threads, exclude: Vec::new(), detect };
+            let opts = WalkOptions { threads, exclude: Vec::new(), detect, record: false };
             let listing = walk_root(root, &opts).expect("walk_root");
             let found: Vec<String> =
                 sorted(&listing).iter().map(|p| String::from_utf8_lossy(p).into_owned()).collect();
@@ -639,7 +640,7 @@ fn the_edge_fixtures_survive_every_worker_count() {
         vec!["github.com/a/x", "mirror", "plain/nested/repo", "store/upstream.git", "worktree"];
     for detect in BOTH {
         for threads in [1, 2, 4, 16] {
-            let opts = WalkOptions { threads, exclude: Vec::new(), detect };
+            let opts = WalkOptions { threads, exclude: Vec::new(), detect, record: false };
             assert_eq!(walk(root, &opts), expected, "{detect:?} at {threads} workers");
         }
     }
@@ -784,4 +785,149 @@ fn an_empty_root_is_read_but_yields_nothing() {
     assert_eq!(listing.dirs_read(), 1, "the root itself is read");
     assert_eq!(listing.excluded(), 0);
     assert!(listing.repos().next().is_none());
+}
+
+#[test]
+fn recording_is_off_unless_the_caller_asks_for_it() {
+    let tmp = tempdir();
+    let root = tmp.path();
+    repo(root, "github.com/a/x");
+    dir(root, "github.com/b");
+
+    let quiet = options(DetectStrategy::StatFirst, &[]);
+    assert!(!quiet.record, "a listing that is only printed records nothing");
+    assert!(
+        walk_root(root, &quiet).expect("walk_root").records().is_empty(),
+        "so the walk carries no index entries"
+    );
+
+    let recording = quiet.clone().with_record(true);
+    assert!(recording.record);
+    assert_eq!(recording.threads, quiet.threads, "with_record changes only the one field");
+    assert_eq!(recording.detect, quiet.detect);
+
+    let listing = walk_root(root, &recording).expect("walk_root");
+    let records = listing.records();
+    let mut by_rel: Vec<(&[u8], bool)> =
+        records.iter().map(|record| (record.rel(), record.is_repo())).collect();
+    by_rel.sort_unstable();
+    assert_eq!(
+        by_rel,
+        [
+            (b"".as_slice(), false),
+            (b"github.com".as_slice(), false),
+            (b"github.com/a".as_slice(), false),
+            (b"github.com/a/x".as_slice(), true),
+            (b"github.com/b".as_slice(), false),
+        ],
+        "one entry per path the walk decided about, and no path twice"
+    );
+    for record in records {
+        assert_eq!(
+            record.mtime_ns().is_none(),
+            record.is_repo(),
+            "a directory carries the mtime it is validated by; a repository carries none"
+        );
+    }
+
+    // `into_records` is the same set, taken rather than borrowed, which is
+    // how the index builder gets them without a copy.
+    let owned = walk_root(root, &recording).expect("walk_root").into_records();
+    assert_eq!(owned.len(), records.len());
+}
+
+#[test]
+fn a_listing_rebuilt_from_records_reports_the_same_repositories() {
+    // ADR-10's validation pass produces repositories it never walked to, and
+    // they have to reach `list`'s post-processing through the same type the
+    // walk produces or the cached and uncached forms could print differently.
+    let tmp = tempdir();
+    let root = tmp.path();
+    repo(root, "github.com/a/x");
+    repo(root, "store/upstream.git");
+    dir(root, "github.com/b");
+
+    let opts = options(DetectStrategy::StatFirst, &[]).with_record(true);
+    let walked = walk_root(root, &opts).expect("walk_root");
+    let rebuilt = RootListing::from_records(walked.records().to_vec(), 0, 0, false);
+
+    assert_eq!(sorted(&rebuilt), sorted(&walked), "the same repositories, from the same entries");
+    assert_eq!(rebuilt.len(), walked.len());
+    assert_eq!(rebuilt.dirs_read(), 0, "a fully validated run reads no directory");
+    assert_eq!(rebuilt.excluded(), 0);
+
+    // A root that is itself a repository is the case where the two forms
+    // could disagree about the printed path: the walk prints `.`, and the
+    // index stores the empty path its `statat` needs.
+    let bare = tempdir();
+    fs::create_dir_all(bare.path().join(".git")).expect("repository fixture");
+    let walked = walk_root(bare.path(), &opts).expect("walk_root");
+    let rebuilt = RootListing::from_records(walked.records().to_vec(), 0, 0, false);
+    assert_eq!(sorted(&rebuilt), [b".".as_slice()]);
+    assert_eq!(sorted(&rebuilt), sorted(&walked));
+}
+
+#[test]
+fn walk_subtrees_re_walks_exactly_the_subtrees_it_is_given() {
+    let tmp = tempdir();
+    let root = tmp.path();
+    repo(root, "github.com/a/x");
+    repo(root, "github.com/b/y");
+    repo(root, "other/z");
+    dir(root, "github.com/c");
+
+    let opts = options(DetectStrategy::StatFirst, &[]).with_record(true);
+    let listing = walk_subtrees(root, &[b"github.com".to_vec()], &opts).expect("walk_subtrees");
+    assert_eq!(
+        sorted(&listing),
+        [b"github.com/a/x".as_slice(), b"github.com/b/y".as_slice()],
+        "paths come back root-relative, and nothing outside the subtree is read"
+    );
+    assert!(listing.dirs_read() >= 4, "the subtree and its directories were read");
+
+    // Several subtrees are one pool run, and the union is what the walk of
+    // each of them separately would have found.
+    let both = walk_subtrees(root, &[b"github.com/a".to_vec(), b"other".to_vec()], &opts)
+        .expect("walk_subtrees");
+    assert_eq!(sorted(&both), [b"github.com/a/x".as_slice(), b"other/z".as_slice()]);
+
+    // An empty batch is the fully validated index: no descriptor is opened
+    // and nothing is read.
+    let none = walk_subtrees(root, &[], &opts).expect("walk_subtrees");
+    assert!(none.is_empty());
+    assert_eq!(none.dirs_read(), 0);
+
+    // A path the index recorded and the tree no longer has contributes
+    // nothing, exactly as it would mid-walk under rule (v).
+    let gone =
+        walk_subtrees(root, &[b"github.com/vanished".to_vec()], &opts).expect("walk_subtrees");
+    assert!(gone.is_empty(), "a subtree that disappeared is a short listing, not an error");
+
+    // A subtree that is itself a repository is emitted rather than descended.
+    let repo_seed =
+        walk_subtrees(root, &[b"github.com/a/x".to_vec()], &opts).expect("walk_subtrees");
+    assert_eq!(sorted(&repo_seed), [b"github.com/a/x".as_slice()]);
+}
+
+#[test]
+fn walk_subtrees_reports_an_unusable_root_the_way_the_walk_does() {
+    let tmp = tempdir();
+    let missing = tmp.path().join("not-there");
+    let listing =
+        walk_subtrees(&missing, &[b"anything".to_vec()], &options(DetectStrategy::StatFirst, &[]))
+            .expect("an unopenable root is not an error");
+    assert!(listing.is_empty());
+
+    let embedded_nul = PathBuf::from(OsStr::from_bytes(b"/roots/\0/x"));
+    assert!(
+        matches!(
+            walk_subtrees(
+                &embedded_nul,
+                &[b"a".to_vec()],
+                &options(DetectStrategy::StatFirst, &[])
+            ),
+            Err(WalkError::InvalidRoot { .. })
+        ),
+        "a root path holding a NUL cannot become a C string"
+    );
 }

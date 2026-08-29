@@ -28,7 +28,12 @@ fn sorted(listing: &crate::walk::RootListing) -> Vec<String> {
 }
 
 fn options(threads: usize) -> WalkOptions {
-    WalkOptions { threads, exclude: Vec::<Pattern>::new(), detect: DetectStrategy::OpenScan }
+    WalkOptions {
+        threads,
+        exclude: Vec::<Pattern>::new(),
+        detect: DetectStrategy::OpenScan,
+        record: false,
+    }
 }
 
 /// The pool is the only thing standing between a caller's number and
@@ -86,6 +91,7 @@ fn every_worker_returns_its_own_output_and_the_union_is_the_walk() {
                 root: root_bytes,
                 exclude: &[],
                 detect: DetectStrategy::OpenScan,
+                record: false,
                 live_fds: &live_fds,
                 fd_cap,
             };
@@ -94,11 +100,11 @@ fn every_worker_returns_its_own_output_and_the_union_is_the_walk() {
             let mut queue = Vec::new();
             seed.read_dir(open_dir(root), b"", &mut queue);
 
-            let parts = run(&ctx, std::os::fd::AsFd::as_fd(&base_fd), queue, threads);
+            let mut parts = run(&ctx, std::os::fd::AsFd::as_fd(&base_fd), queue, threads);
             assert_eq!(parts.len(), threads, "one output per worker, joined in order");
 
             let mut merged = seed.into_out();
-            for part in &parts {
+            for part in &mut parts {
                 merged.merge(part);
             }
             let mut found: Vec<String> =
@@ -143,6 +149,7 @@ fn a_panicking_worker_propagates_instead_of_hanging_the_pool() {
         root: root_bytes,
         exclude: &[],
         detect: DetectStrategy::OpenScan,
+        record: false,
         live_fds: &live_fds,
         fd_cap: FD_CAP,
     };
