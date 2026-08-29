@@ -8,6 +8,11 @@ description = "A remote repository management CLI in Rust, a port of x-motemen/g
 repository = "https://github.com/zchee/scap"
 readme = "README.md"
 
+# An empty workspace table pins the workspace root to this manifest so cargo
+# does not search parent directories for one (a stray package manifest above
+# this repository would otherwise make every cargo command fail).
+[workspace]
+
 [dependencies]
 jwalk = "0.9"
 anyhow = { version = "1", default-features = false }
