@@ -48,9 +48,35 @@ fn get_help_lists_documented_flags() {
 fn list_help_lists_documented_flags() {
     let assert = Command::cargo_bin("scap").unwrap().args(["list", "--help"]).assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
-    for flag in ["--exact", "--full-path", "--unique", "--bare", "--vcs"] {
+    for flag in [
+        "--exact",
+        "--full-path",
+        "--unique",
+        "--bare",
+        "--vcs",
+        // ADR-10's three, the only new CLI surface the optimization plan
+        // adds. `--cache-check` is listed because it is how a suspected
+        // stale index is settled, which is no use if it is undiscoverable.
+        "--cache",
+        "--no-cache",
+        "--cache-check",
+    ] {
         assert!(stdout.contains(flag), "scap list --help missing flag: {flag}");
     }
+}
+
+#[test]
+fn list_rejects_no_cache_together_with_cache_check() {
+    // The two are not a precedence question: a check against an index the same
+    // command line forbids reading has no honest answer, so `list` refuses the
+    // pair instead of silently picking one. Pinned here because the refusal is
+    // user-visible surface, like the flags themselves.
+    Command::cargo_bin("scap")
+        .unwrap()
+        .args(["list", "--no-cache", "--cache-check"])
+        .assert()
+        .failure()
+        .code(2);
 }
 
 #[test]
