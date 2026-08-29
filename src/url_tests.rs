@@ -467,17 +467,17 @@ fn emits_canonical_https_and_ssh_urls() {
 fn parses_codecommit_urls() {
     // ghq never inserts an owner/profile path segment for a codecommit
     // ref (local_repository.go:76-78) -- see the doc comment on
-    // `finalize_codecommit`.
+    // `finalize_codecommit`. A region-absent ref is deliberately not
+    // exercised here: since #12c it resolves via `AWS_REGION` /
+    // `AWS_DEFAULT_REGION` / `aws configure get region` (see
+    // `resolve_codecommit_region`'s own tests below), so calling
+    // `from_input` on one from this process would depend on this
+    // machine's real environment and installed `aws` CLI.
     let r = from_input("codecommit::us-east-1://example-profile@my-repo", None, false).unwrap();
     assert_eq!(r.host, "us-east-1");
     assert_eq!(r.owner, "");
     assert_eq!(r.name, "my-repo");
     assert_eq!(r.vcs_hint.as_deref(), Some("git"));
-
-    let r2 = from_input("codecommit://my-repo", None, false).unwrap();
-    assert_eq!(r2.host, "codecommit");
-    assert_eq!(r2.owner, "");
-    assert_eq!(r2.name, "my-repo");
 }
 
 // --- #12b: `finalize_codecommit` destination parity with ghq --------------
@@ -486,9 +486,15 @@ fn parses_codecommit_urls() {
 // (local_repository.go:76-86, url.go:100-106): `pathParts` is
 // `[Hostname()] + Path.split("/")`, `Path` is the bare repo name with no
 // leading slash, and `User` (the optional `<profile>@`) never feeds the
-// path. Table below exercises every spelling ghq's `codecommitLikeURLPattern`
-// accepts (url.go:25): region present/absent, profile present/absent, and
-// repo names carrying `_`, `.`, `-`.
+// path. Table below exercises every region-explicit spelling ghq's
+// `codecommitLikeURLPattern` accepts (url.go:25): profile present/absent,
+// repo names carrying `_`, `.`, `-`. A region-absent spelling is not in
+// this table -- since #12c that path resolves through real process env
+// and (on failure) a real `aws` subprocess, so it is not something
+// `from_input` can be asked about deterministically from a unit test; see
+// `resolve_codecommit_region`'s own tests just below for that logic, and
+// `tests/parity_ghq.rs::codecommit_region_resolution_matches_ghq` for the
+// end-to-end behaviour under a controlled child-process environment.
 
 struct CodecommitCase {
     input: &'static str,
@@ -499,22 +505,6 @@ struct CodecommitCase {
 #[test]
 fn finalize_codecommit_matches_ghqs_path_components() {
     let cases: &[(&str, CodecommitCase)] = &[
-        (
-            "no_region_no_profile",
-            CodecommitCase {
-                input: "codecommit://my-repo",
-                want_host: "codecommit",
-                want_name: "my-repo",
-            },
-        ),
-        (
-            "no_region_with_profile",
-            CodecommitCase {
-                input: "codecommit://profile@my-repo",
-                want_host: "codecommit",
-                want_name: "my-repo",
-            },
-        ),
         (
             "region_no_profile",
             CodecommitCase {
@@ -563,6 +553,70 @@ fn finalize_codecommit_matches_ghqs_path_components() {
         let want = std::path::PathBuf::from(c.want_host).join(c.want_name);
         assert_eq!(dest, want, "{name}: rel_path");
     }
+}
+
+// --- #12c: `resolve_codecommit_region` (ghq url.go:63-97) ------------------
+//
+// Pure by construction (env values and the `aws` lookup are parameters),
+// so every case below is exercised without touching `std::env` -- the
+// crate denies `unsafe` everywhere, and mutating the process environment
+// from a test is forbidden regardless (nextest gives each test its own
+// process, but that is not a license to rely on it here).
+
+#[test]
+fn resolve_codecommit_region_prefers_aws_region_over_aws_default_region() {
+    let got = resolve_codecommit_region(Some("us-east-1"), Some("us-west-2"), || {
+        panic!("aws_lookup must not run when AWS_REGION is non-empty")
+    });
+    assert_eq!(got.unwrap(), "us-east-1");
+}
+
+#[test]
+fn resolve_codecommit_region_falls_back_to_aws_default_region_when_aws_region_is_absent() {
+    let got = resolve_codecommit_region(None, Some("us-west-2"), || {
+        panic!("aws_lookup must not run when AWS_DEFAULT_REGION is non-empty")
+    });
+    assert_eq!(got.unwrap(), "us-west-2");
+}
+
+#[test]
+fn resolve_codecommit_region_treats_an_explicitly_empty_aws_region_as_absent() {
+    // A deliberate divergence from ghq's raw `os.LookupEnv`, which would
+    // treat `AWS_REGION=""` as present and use the empty string as the
+    // region -- see the doc comment on `resolve_codecommit_region`.
+    let got = resolve_codecommit_region(Some(""), Some("us-west-2"), || {
+        panic!("aws_lookup must not run when AWS_DEFAULT_REGION is non-empty")
+    });
+    assert_eq!(got.unwrap(), "us-west-2");
+}
+
+#[test]
+fn resolve_codecommit_region_uses_the_aws_lookup_when_both_env_vars_are_absent() {
+    let got = resolve_codecommit_region(None, None, || Some("eu-west-2".to_owned()));
+    assert_eq!(got.unwrap(), "eu-west-2");
+}
+
+#[test]
+fn resolve_codecommit_region_uses_the_aws_lookup_when_both_env_vars_are_empty() {
+    let got = resolve_codecommit_region(Some(""), Some(""), || Some("ap-southeast-1".to_owned()));
+    assert_eq!(got.unwrap(), "ap-southeast-1");
+}
+
+#[test]
+fn resolve_codecommit_region_fails_with_ghqs_message_when_nothing_resolves() {
+    let err = resolve_codecommit_region(None, None, || None).unwrap_err();
+    assert!(matches!(err, UrlError::MissingCodecommitRegion));
+    assert_eq!(
+        err.to_string(),
+        "You must specify a region. You can also configure your region by running \"aws \
+         configure\"."
+    );
+}
+
+#[test]
+fn resolve_codecommit_region_fails_when_the_aws_lookup_returns_nothing_and_env_is_empty() {
+    let err = resolve_codecommit_region(Some(""), Some(""), || None).unwrap_err();
+    assert!(matches!(err, UrlError::MissingCodecommitRegion));
 }
 
 #[test]

@@ -4,6 +4,10 @@ use std::process::Command;
 use assert_cmd::Command as ScapCmd;
 use tempfile::TempDir;
 
+mod support;
+
+use support::empty_path_dir;
+
 /// True when `GHQ_BINARY` names a file the current user can execute.
 fn ghq_binary_is_executable() -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -431,6 +435,109 @@ fn codecommit_destination_matches_ghq() {
             .unwrap_or_else(|_| panic!("scap dest {scap_dest:?} not under its root for {r:?}"));
 
         assert_eq!(scap_rel, ghq_rel, "destination diverges for {r:?}");
+    }
+}
+
+#[test]
+#[ignore]
+fn codecommit_region_resolution_matches_ghq() {
+    // #12c: a codecommit ref with no explicit `::<region>:` resolves its
+    // region via AWS_REGION, then AWS_DEFAULT_REGION, then `aws configure
+    // get region`, else fails with "You must specify a region. You can
+    // also configure your region by running \"aws configure\"." on
+    // stderr and exit 1 (url.go:63-97; see the doc comment on
+    // `url::resolve_codecommit_region`). Both branches below are driven
+    // entirely by the CHILD process's environment (never this test
+    // process's), so the comparison holds regardless of what this
+    // machine's own AWS_REGION/AWS_DEFAULT_REGION/`aws` CLI happen to be.
+    let Some(ghq) = ghq_binary() else { return };
+    const REF: &str = "codecommit://plain-repo";
+    const GHQ_MESSAGE: &str = "You must specify a region. You can also configure your region \
+                                by running \"aws configure\".";
+
+    // Success: AWS_REGION resolves the region exactly like an explicit
+    // `::<region>:` would, still with no owner/profile segment (#12b).
+    {
+        let ghq_home = TempDir::new().unwrap();
+        let ghq_root = TempDir::new().unwrap();
+        let mut ghq_env = isolated(ghq_home.path(), ghq_root.path());
+        ghq_env.push(("GHQ_ROOT".to_string(), ghq_root.path().to_string_lossy().into_owned()));
+        let ghq_out = Command::new(&ghq)
+            .args(["create", REF])
+            .env_remove("AWS_DEFAULT_REGION")
+            .env("AWS_REGION", "us-west-2")
+            .envs(ghq_env.iter().cloned())
+            .output()
+            .unwrap();
+        assert!(ghq_out.status.success(), "ghq create {REF:?} failed: {ghq_out:?}");
+        let ghq_dest = String::from_utf8_lossy(&ghq_out.stdout).trim().to_owned();
+        let ghq_rel = std::path::Path::new(&ghq_dest)
+            .strip_prefix(ghq_root.path())
+            .unwrap_or_else(|_| panic!("ghq dest {ghq_dest:?} not under its root"));
+
+        let scap_home = TempDir::new().unwrap();
+        let scap_root = TempDir::new().unwrap();
+        let scap_env = isolated(scap_home.path(), scap_root.path());
+        let scap_out = ScapCmd::cargo_bin("scap")
+            .unwrap()
+            .args(["create", REF])
+            .env_remove("AWS_DEFAULT_REGION")
+            .env("AWS_REGION", "us-west-2")
+            .envs(scap_env.iter().cloned())
+            .output()
+            .unwrap();
+        assert!(scap_out.status.success(), "scap create {REF:?} failed: {scap_out:?}");
+        let scap_dest = String::from_utf8_lossy(&scap_out.stdout).trim().to_owned();
+        let scap_rel = std::path::Path::new(&scap_dest)
+            .strip_prefix(scap_root.path())
+            .unwrap_or_else(|_| panic!("scap dest {scap_dest:?} not under its root"));
+
+        assert_eq!(scap_rel, ghq_rel, "AWS_REGION-resolved destination diverges from ghq");
+    }
+
+    // Failure: no region resolvable anywhere -- both env vars cleared and
+    // PATH pointed at an empty directory, so no `aws` (or anything else)
+    // can be found. Both tools must exit non-zero with ghq's own message.
+    {
+        let empty_path = empty_path_dir();
+
+        let ghq_home = TempDir::new().unwrap();
+        let ghq_root = TempDir::new().unwrap();
+        let mut ghq_env = isolated(ghq_home.path(), ghq_root.path());
+        ghq_env.push(("GHQ_ROOT".to_string(), ghq_root.path().to_string_lossy().into_owned()));
+        let ghq_out = Command::new(&ghq)
+            .args(["create", REF])
+            .env_remove("AWS_REGION")
+            .env_remove("AWS_DEFAULT_REGION")
+            .env("PATH", empty_path.path())
+            .envs(ghq_env.iter().cloned())
+            .output()
+            .unwrap();
+        assert!(!ghq_out.status.success(), "ghq create {REF:?} should have failed: {ghq_out:?}");
+        let ghq_err = String::from_utf8_lossy(&ghq_out.stderr).into_owned();
+        assert!(
+            ghq_err.contains(GHQ_MESSAGE),
+            "ghq's own stderr does not contain its own message: {ghq_err:?}"
+        );
+
+        let scap_home = TempDir::new().unwrap();
+        let scap_root = TempDir::new().unwrap();
+        let scap_env = isolated(scap_home.path(), scap_root.path());
+        let scap_out = ScapCmd::cargo_bin("scap")
+            .unwrap()
+            .args(["create", REF])
+            .env_remove("AWS_REGION")
+            .env_remove("AWS_DEFAULT_REGION")
+            .env("PATH", empty_path.path())
+            .envs(scap_env.iter().cloned())
+            .output()
+            .unwrap();
+        assert!(!scap_out.status.success(), "scap create {REF:?} should have failed: {scap_out:?}");
+        let scap_err = String::from_utf8_lossy(&scap_out.stderr).into_owned();
+        assert!(
+            scap_err.contains(GHQ_MESSAGE),
+            "scap stderr does not contain ghq's message: {scap_err:?}"
+        );
     }
 }
 

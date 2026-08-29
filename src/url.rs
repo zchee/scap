@@ -25,6 +25,10 @@ pub enum UrlError {
     MissingHost(String),
     #[error("URL has no repository path: {0:?}")]
     MissingPath(String),
+    #[error(
+        "You must specify a region. You can also configure your region by running \"aws configure\"."
+    )]
+    MissingCodecommitRegion,
 }
 
 pub fn from_input(
@@ -358,13 +362,11 @@ fn parse_codecommit(input: &str) -> Option<(String, Option<String>, Option<Strin
 /// already skips empty owner segments, so mirroring this is just: no owner
 /// segment, ever.
 ///
-/// Region resolution when the ref omits `::<region>:` is env/AWS-CLI
-/// dependent in ghq (url.go:63-97: `AWS_REGION`, then
-/// `AWS_DEFAULT_REGION`, then `aws configure get region`, else exit(1)) --
-/// scap does not shell out to `aws` for this and keeps the pre-existing
-/// `codecommit` host placeholder instead of failing. That is a separate,
-/// known divergence from this fix, which is scoped to the path-component
-/// shape ghq produces once a host is known.
+/// Region resolution when the ref omits `::<region>:` mirrors ghq's
+/// `AWS_REGION` / `AWS_DEFAULT_REGION` / `aws configure get region` chain
+/// (url.go:63-97) via [`resolve_codecommit_region`]; a bare `codecommit`
+/// input has no path component of its own to fall back on, so this is the
+/// only spelling that can spawn `aws` -- a region-explicit ref never does.
 fn finalize_codecommit(
     original: &str,
     _scheme: String,
@@ -372,7 +374,18 @@ fn finalize_codecommit(
     user: Option<String>,
     repo_name: String,
 ) -> Result<Repo, UrlError> {
-    let host = region.unwrap_or_else(|| "codecommit".to_owned());
+    let host = match region {
+        Some(r) => r,
+        None => {
+            let aws_region = std::env::var("AWS_REGION").ok();
+            let aws_default_region = std::env::var("AWS_DEFAULT_REGION").ok();
+            resolve_codecommit_region(
+                aws_region.as_deref(),
+                aws_default_region.as_deref(),
+                run_aws_configure_get_region,
+            )?
+        }
+    };
     let owner = String::new();
     let name = repo_name;
     let https_url = match &user {
@@ -389,6 +402,62 @@ fn finalize_codecommit(
         ssh_url,
         original_input: original.to_owned(),
     })
+}
+
+/// Resolves the region for a codecommit ref that omits `::<region>:`,
+/// mirroring ghq's fallback chain (url.go:63-97): `AWS_REGION` if
+/// non-empty, else `AWS_DEFAULT_REGION` if non-empty, else the trimmed
+/// stdout of `aws configure get region` if that succeeds with non-empty
+/// output, else [`UrlError::MissingCodecommitRegion`] with ghq's own
+/// message text. `aws_lookup` is called at most once, and only when both
+/// env values are absent or empty -- the `aws` subprocess this drives in
+/// production ([`run_aws_configure_get_region`]) is never spawned for a
+/// region-explicit ref.
+///
+/// A deliberate simplification from ghq: `os.LookupEnv` treats a variable
+/// set to `""` as present and would use that empty string as the region;
+/// this checks non-emptiness instead, so an explicitly empty
+/// `AWS_REGION=""` falls through to `AWS_DEFAULT_REGION` rather than
+/// resolving to an empty host. ghq also forwards the real `aws` CLI's own
+/// stderr when it runs but fails; this always reports the same generic
+/// message instead, so the failure text does not depend on the installed
+/// `aws` CLI's version or locale.
+///
+/// Pure and env-free by construction (both env values and the `aws`
+/// lookup are parameters, not process state), so it is exercised directly
+/// in `src/url_tests.rs` without mutating `std::env` -- forbidden here,
+/// since `unsafe` is denied crate-wide.
+fn resolve_codecommit_region(
+    aws_region: Option<&str>,
+    aws_default_region: Option<&str>,
+    aws_lookup: impl FnOnce() -> Option<String>,
+) -> Result<String, UrlError> {
+    if let Some(r) = aws_region
+        && !r.is_empty()
+    {
+        return Ok(r.to_owned());
+    }
+    if let Some(r) = aws_default_region
+        && !r.is_empty()
+    {
+        return Ok(r.to_owned());
+    }
+    aws_lookup().ok_or(UrlError::MissingCodecommitRegion)
+}
+
+/// Production `aws_lookup` for [`resolve_codecommit_region`]: runs `aws
+/// configure get region` and returns its trimmed stdout, or `None` if
+/// `aws` is not on `PATH`, fails to spawn, exits non-zero, or prints
+/// nothing (ghq's own condition for falling through to its final error,
+/// url.go:82-96).
+fn run_aws_configure_get_region() -> Option<String> {
+    let output =
+        std::process::Command::new("aws").args(["configure", "get", "region"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let region = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!region.is_empty()).then_some(region)
 }
 
 #[cfg(test)]
