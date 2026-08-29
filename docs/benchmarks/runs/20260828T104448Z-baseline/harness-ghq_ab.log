@@ -1,0 +1,42 @@
+==> [ghq_list_ab] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'GHQ_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/Users/zchee/go/bin/ghq' 'list'
+Benchmark 1: ghq_list_ab
+  Time (mean ± σ):     628.4 ms ±   9.7 ms    [User: 579.4 ms, System: 6195.0 ms]
+  Range (min … max):   612.8 ms … 649.0 ms    30 runs
+ 
+==> [ghq_list_ab_p] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'GHQ_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/Users/zchee/go/bin/ghq' 'list' '-p'
+Benchmark 1: ghq_list_ab_p
+  Time (mean ± σ):     627.2 ms ±   9.5 ms    [User: 577.0 ms, System: 6013.2 ms]
+  Range (min … max):   602.8 ms … 648.2 ms    30 runs
+ 
+==> [ghq_list_ab_unique] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'GHQ_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/Users/zchee/go/bin/ghq' 'list' '--unique'
+Benchmark 1: ghq_list_ab_unique
+  Time (mean ± σ):     629.4 ms ±   9.4 ms    [User: 579.8 ms, System: 6139.6 ms]
+  Range (min … max):   613.0 ms … 658.5 ms    30 runs
+ 
+==> [ghq_list_ab_query] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'GHQ_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/Users/zchee/go/bin/ghq' 'list' 'zchee'
+Benchmark 1: ghq_list_ab_query
+  Time (mean ± σ):     622.5 ms ±   6.7 ms    [User: 556.6 ms, System: 6169.3 ms]
+  Range (min … max):   611.3 ms … 641.7 ms    30 runs
+ 
+bench-quiet.sh: wrote /Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260828T104448Z-baseline/metadata.json and /Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260828T104448Z-baseline/summary.md (4 rows)
+==> [ghq_list_ab] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'GHQ_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/Users/zchee/go/bin/ghq' 'list'
+Benchmark 1: ghq_list_ab
+  Time (mean ± σ):     634.0 ms ±  10.7 ms    [User: 573.1 ms, System: 6028.6 ms]
+  Range (min … max):   608.1 ms … 668.7 ms    30 runs
+ 
+==> [ghq_list_ab_p] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'GHQ_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/Users/zchee/go/bin/ghq' 'list' '-p'
+Benchmark 1: ghq_list_ab_p
+  Time (mean ± σ):     621.6 ms ±   9.1 ms    [User: 568.7 ms, System: 6033.2 ms]
+  Range (min … max):   612.7 ms … 655.4 ms    30 runs
+ 
+==> [ghq_list_ab_unique] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'GHQ_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/Users/zchee/go/bin/ghq' 'list' '--unique'
+Benchmark 1: ghq_list_ab_unique
+  Time (mean ± σ):     629.4 ms ±   4.7 ms    [User: 584.3 ms, System: 6312.9 ms]
+  Range (min … max):   617.8 ms … 638.5 ms    30 runs
+ 
+==> [ghq_list_ab_query] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'GHQ_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/Users/zchee/go/bin/ghq' 'list' 'zchee'
+Benchmark 1: ghq_list_ab_query
+  Time (mean ± σ):     618.5 ms ±  21.5 ms    [User: 565.0 ms, System: 5889.7 ms]
+  Range (min … max):   589.6 ms … 701.1 ms    30 runs
+ 
+bench-quiet.sh: wrote /Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260828T104448Z-baseline/metadata.json and /Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260828T104448Z-baseline/summary.md (4 rows)

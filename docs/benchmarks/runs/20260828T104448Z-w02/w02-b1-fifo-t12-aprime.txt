@@ -1,0 +1,4 @@
+Benchmark 1: w02-b1-fifo-t12-aprime
+  Time (mean ± σ):      37.2 ms ±   1.4 ms    [User: 6.4 ms, System: 332.9 ms]
+  Range (min … max):    31.8 ms …  38.7 ms    30 runs
+ 

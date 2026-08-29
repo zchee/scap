@@ -1,0 +1,23 @@
+==> [list_ab] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'SCAP_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/Users/zchee/rust/src/github.com/zchee/scap/target/release/scap' 'list'
+Benchmark 1: list_ab
+  Time (mean ± σ):     159.2 ms ±   7.3 ms    [User: 171.4 ms, System: 585.3 ms]
+  Range (min … max):   151.7 ms … 182.4 ms    30 runs
+ 
+==> [list_ab_p] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'SCAP_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/Users/zchee/rust/src/github.com/zchee/scap/target/release/scap' 'list' '-p'
+Benchmark 1: list_ab_p
+  Time (mean ± σ):     159.0 ms ±   6.4 ms    [User: 170.3 ms, System: 583.8 ms]
+  Range (min … max):   152.5 ms … 182.0 ms    30 runs
+ 
+  Warning: Statistical outliers were detected. Consider re-running this benchmark on a quiet system without any interferences from other programs. It might help to use the '--warmup' or '--prepare' options.
+ 
+==> [list_ab_unique] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'SCAP_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/Users/zchee/rust/src/github.com/zchee/scap/target/release/scap' 'list' '--unique'
+Benchmark 1: list_ab_unique
+  Time (mean ± σ):     162.4 ms ±   8.2 ms    [User: 176.8 ms, System: 590.5 ms]
+  Range (min … max):   153.4 ms … 181.1 ms    30 runs
+ 
+==> [list_ab_query] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'SCAP_ROOT=/Users/zchee/src:/Users/zchee/go/src' '/Users/zchee/rust/src/github.com/zchee/scap/target/release/scap' 'list' 'zchee'
+Benchmark 1: list_ab_query
+  Time (mean ± σ):     158.9 ms ±   7.9 ms    [User: 170.4 ms, System: 583.9 ms]
+  Range (min … max):   151.8 ms … 187.0 ms    30 runs
+ 
+bench-quiet.sh: wrote /Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260828T104448Z-baseline/metadata.json and /Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260828T104448Z-baseline/summary.md (4 rows)

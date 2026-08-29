@@ -1,0 +1,4 @@
+Benchmark 1: w02-b1-fifo-t16-ab
+  Time (mean ± σ):     219.5 ms ±  10.9 ms    [User: 63.2 ms, System: 2857.4 ms]
+  Range (min … max):   201.5 ms … 235.8 ms    30 runs
+ 

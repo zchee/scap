@@ -1,0 +1,21 @@
+==> [root_env] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' 'SCAP_ROOT=/Users/zchee/src' '/Users/zchee/rust/src/github.com/zchee/scap/target/release/scap' 'root'
+Benchmark 1: root_env
+  Time (mean ± σ):       4.7 ms ±   0.3 ms    [User: 1.8 ms, System: 1.3 ms]
+  Range (min … max):     4.4 ms …   5.4 ms    30 runs
+ 
+==> [root_pinned_root_cwd] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' '-u' 'SCAP_ROOT' '-C' '/' 'GIT_CONFIG_GLOBAL=/var/folders/dp/89wwdp754235m6jmdzj7p5lm0000gn/T//scap-bench-fixtures.RanJfn/pinned-gitconfig' 'GIT_CONFIG_NOSYSTEM=1' '/Users/zchee/rust/src/github.com/zchee/scap/target/release/scap' 'root'
+Benchmark 1: root_pinned_root_cwd
+  Time (mean ± σ):      10.1 ms ±   0.3 ms    [User: 4.2 ms, System: 3.5 ms]
+  Range (min … max):     9.8 ms …  11.1 ms    30 runs
+ 
+==> [root_pinned_outside8_cwd] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' '-u' 'SCAP_ROOT' '-C' '/var/folders/dp/89wwdp754235m6jmdzj7p5lm0000gn/T//scap-bench-fixtures.RanJfn/outside/l1/l2/l3/l4/l5/l6/l7/l8' 'GIT_CONFIG_GLOBAL=/var/folders/dp/89wwdp754235m6jmdzj7p5lm0000gn/T//scap-bench-fixtures.RanJfn/pinned-gitconfig' 'GIT_CONFIG_NOSYSTEM=1' '/Users/zchee/rust/src/github.com/zchee/scap/target/release/scap' 'root'
+Benchmark 1: root_pinned_outside8_cwd
+  Time (mean ± σ):      11.2 ms ±   1.0 ms    [User: 4.5 ms, System: 3.9 ms]
+  Range (min … max):    10.2 ms …  14.0 ms    30 runs
+ 
+==> [root_pinned_inside8_cwd] '/opt/homebrew/opt/coreutils/libexec/gnubin/env' '-u' 'SCAP_ROOT' '-C' '/var/folders/dp/89wwdp754235m6jmdzj7p5lm0000gn/T//scap-bench-fixtures.RanJfn/inside-repo/d1/d2/d3/d4/d5/d6/d7/d8' 'GIT_CONFIG_GLOBAL=/var/folders/dp/89wwdp754235m6jmdzj7p5lm0000gn/T//scap-bench-fixtures.RanJfn/pinned-gitconfig' 'GIT_CONFIG_NOSYSTEM=1' '/Users/zchee/rust/src/github.com/zchee/scap/target/release/scap' 'root'
+Benchmark 1: root_pinned_inside8_cwd
+  Time (mean ± σ):      11.4 ms ±   0.9 ms    [User: 4.6 ms, System: 4.0 ms]
+  Range (min … max):    10.3 ms …  13.3 ms    30 runs
+ 
+bench-quiet.sh: wrote /Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260828T104448Z-baseline/metadata.json and /Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260828T104448Z-baseline/summary.md (4 rows)

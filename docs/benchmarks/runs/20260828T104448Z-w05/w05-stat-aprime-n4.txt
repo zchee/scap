@@ -1,0 +1,4 @@
+Benchmark 1: w05-stat-aprime-n4
+  Time (mean ± σ):       4.0 ms ±   0.2 ms    [User: 1.2 ms, System: 4.0 ms]
+  Range (min … max):     3.5 ms …   4.5 ms    30 runs
+ 

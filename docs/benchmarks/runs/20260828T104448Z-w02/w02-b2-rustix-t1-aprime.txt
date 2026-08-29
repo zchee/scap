@@ -1,0 +1,4 @@
+Benchmark 1: w02-b2-rustix-t1-aprime
+  Time (mean ± σ):      46.6 ms ±   1.6 ms    [User: 4.0 ms, System: 40.7 ms]
+  Range (min … max):    43.8 ms …  50.7 ms    30 runs
+ 

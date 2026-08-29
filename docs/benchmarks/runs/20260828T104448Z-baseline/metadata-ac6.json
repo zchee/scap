@@ -1,0 +1,35 @@
+{
+  "git_head": "7ac3527b602214b256c1992dbc671a89b46333d9",
+  "rustc": "rustc 1.100.0-nightly (e457a7b0d 2026-08-27)",
+  "hyperfine": "hyperfine 1.20.0",
+  "load_avg": {
+    "start": "{ 1.97 4.41 5.50 }",
+    "end": "{ 2.98 4.51 5.52 }"
+  },
+  "xprotectd_cpu_pct": {
+    "start": 0.50,
+    "end": 11.40
+  },
+  "cpu_idle_pct": {
+    "start": 85.41,
+    "end": 90.84
+  },
+  "top_proc_cpu_pct": {
+    "start": 12.7,
+    "end": 28.0
+  },
+  "gate": {
+    "deviation": "D-1: contention measured directly; load average recorded, not gated",
+    "idle_min_pct": 85.0,
+    "top_proc_max_pct": 15.0
+  },
+  "os": {
+    "name": "macOS",
+    "version": "27.0",
+    "build": "26A5421a"
+  },
+  "cpu_brand": "Apple M3 Max",
+  "runs": 30,
+  "warmup": 5,
+  "forced": false
+}

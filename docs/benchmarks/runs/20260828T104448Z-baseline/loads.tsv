@@ -1,0 +1,11 @@
+row	idle_before	idle_after	load1_before	load1_after
+baseline/ac6	89.78	92.57	1.97	3.06
+baseline/ac1	89.89	85.30	2.51	3.07
+baseline/scap_a	93.23	89.4	2.15	3.78
+baseline/scap_b	91.93	75.2	2.00	2.25
+baseline/scap_b	91.86	92.38	2.16	2.75
+baseline/scap_ab	92.52	91.30	2.51	3.56
+baseline/ghq_a	90.24	91.54	6.03	11.30
+baseline/ghq_b	93.50	94.20	8.71	9.11
+baseline/ghq_ab	92.0	2.83	8.42	16.93
+baseline/ghq_ab	92.5	91.18	13.93	20.82

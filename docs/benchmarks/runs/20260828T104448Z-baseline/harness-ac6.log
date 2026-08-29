@@ -1,0 +1,11 @@
+==> [empty] '/Users/zchee/rust/src/github.com/zchee/scap/.omc/spikes/w00-empty/target/release/empty'
+Benchmark 1: empty
+  Time (mean ± σ):       2.3 ms ±   0.2 ms    [User: 0.8 ms, System: 0.5 ms]
+  Range (min … max):     2.0 ms …   2.7 ms    30 runs
+ 
+==> [version] '/Users/zchee/rust/src/github.com/zchee/scap/target/release/scap' '--version'
+Benchmark 1: version
+  Time (mean ± σ):       2.6 ms ±   0.2 ms    [User: 1.0 ms, System: 0.5 ms]
+  Range (min … max):     2.3 ms …   3.2 ms    30 runs
+ 
+bench-quiet.sh: wrote /Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260828T104448Z-baseline/metadata.json and /Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260828T104448Z-baseline/summary.md (2 rows)

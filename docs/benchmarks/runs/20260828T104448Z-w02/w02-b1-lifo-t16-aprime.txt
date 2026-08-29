@@ -1,0 +1,4 @@
+Benchmark 1: w02-b1-lifo-t16-aprime
+  Time (mean ± σ):      32.3 ms ±   2.1 ms    [User: 7.6 ms, System: 344.3 ms]
+  Range (min … max):    27.7 ms …  36.1 ms    30 runs
+ 

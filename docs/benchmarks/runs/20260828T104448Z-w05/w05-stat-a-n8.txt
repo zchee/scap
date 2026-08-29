@@ -1,0 +1,4 @@
+Benchmark 1: w05-stat-a-n8
+  Time (mean ± σ):      16.6 ms ±   0.6 ms    [User: 4.2 ms, System: 84.7 ms]
+  Range (min … max):    15.5 ms …  19.2 ms    30 runs
+ 

@@ -1,0 +1,6 @@
+Benchmark 1: w05-stat-a-n1
+  Time (mean ± σ):      28.1 ms ±   2.0 ms    [User: 3.1 ms, System: 22.6 ms]
+  Range (min … max):    26.3 ms …  36.2 ms    30 runs
+ 
+  Warning: Statistical outliers were detected. Consider re-running this benchmark on a quiet system without any interferences from other programs. It might help to use the '--warmup' or '--prepare' options.
+ 

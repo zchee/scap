@@ -1,0 +1,1 @@
+dirs_read=21360 entries=204800 repos=1822 fstatat=69 excluded=0

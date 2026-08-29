@@ -1,0 +1,6 @@
+Benchmark 1: w02-b1-fifo-t2-aprime
+  Time (mean ± σ):      28.7 ms ±   1.1 ms    [User: 3.7 ms, System: 46.4 ms]
+  Range (min … max):    27.7 ms …  32.7 ms    30 runs
+ 
+  Warning: Statistical outliers were detected. Consider re-running this benchmark on a quiet system without any interferences from other programs. It might help to use the '--warmup' or '--prepare' options.
+ 

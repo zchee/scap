@@ -1,0 +1,4 @@
+Benchmark 1: w02-b1-deque-t16-aprime
+  Time (mean ± σ):      36.3 ms ±   2.3 ms    [User: 8.4 ms, System: 397.6 ms]
+  Range (min … max):    32.4 ms …  40.5 ms    30 runs
+ 
