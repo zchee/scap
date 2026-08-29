@@ -31,6 +31,10 @@ predicates = { version = "3", default-features = false }
 regex = "1"
 serial_test = { version = "4", default-features = false }
 tempfile = { version = "3", default-features = false }
+# Adds `tracing/std` (release build does not request it, so this stays
+# test-only) for `tracing::subscriber::with_default`, used by
+# src/lib_tests.rs to install a subscriber scoped to one test body.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 # ADR-11 bounded-unsafe policy. The shipped walker took the B2 (`rustix`)
 # path, so the crate holds no `unsafe` at all and no `allow(unsafe_code)`
