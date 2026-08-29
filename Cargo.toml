@@ -18,10 +18,7 @@ jwalk = "0.9"
 anyhow = { version = "1", default-features = false }
 bstr = { version = "1", default-features = false }
 clap = { version = "4", features = ["derive"] }
-dirs = "6"
-fs2 = "0.4"
 gix-url = "0.37"
-regex = "1.12.3"
 thiserror = { version = "2", default-features = false }
 tracing = { version = "0.1", features = ["attributes"], default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], default-features = false }
@@ -29,6 +26,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], defaul
 [dev-dependencies]
 assert_cmd = "2"
 predicates = { version = "3", default-features = false }
+# Only the W1.3 differential test compiles ghq's codecommit pattern; the crate
+# itself ships no runtime regex engine.
+regex = "1"
 serial_test = { version = "4", default-features = false }
 tempfile = { version = "3", default-features = false }
 

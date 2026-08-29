@@ -1,8 +1,5 @@
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::OnceLock;
-
-use regex::Regex;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -35,7 +32,7 @@ pub fn resolve_roots(all: bool) -> Result<Vec<PathBuf>, ConfigError> {
     };
 
     if roots.is_empty() {
-        let home = dirs::home_dir().ok_or(ConfigError::NoHomeDir)?;
+        let home = std::env::home_dir().ok_or(ConfigError::NoHomeDir)?;
         roots.push(home.join("scap"));
     }
 
@@ -67,7 +64,7 @@ pub fn root_for_url(url: &str) -> Result<PathBuf, ConfigError> {
         }
     }
 
-    if !is_codecommit_like(url) {
+    if !crate::url::is_codecommit_input(url) {
         let out = run_git_config(&["--path", "--get-urlmatch", "scap.root", url])?;
         if let Some(value) = out {
             let trimmed = value.trim();
@@ -125,15 +122,6 @@ fn url_match_local_repository_roots() -> Result<Vec<PathBuf>, ConfigError> {
         }
     }
     Ok(paths)
-}
-
-fn is_codecommit_like(url: &str) -> bool {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(r"^(codecommit):(?::([a-z][a-z0-9-]+):)?//(?:([^@]+)@)?([\w\.-]+)$")
-            .expect("codecommit regex compiles")
-    });
-    re.is_match(url)
 }
 
 fn run_git_config(args: &[&str]) -> Result<Option<String>, ConfigError> {

@@ -254,6 +254,67 @@ fn build_github_repo(original: &str, owner: &str, name: &str) -> Repo {
     }
 }
 
+/// Reports whether `input` is a CodeCommit-style URL, using ghq's pattern
+/// (url.go:25):
+///
+/// ```text
+/// ^(codecommit):(?::([a-z][a-z0-9-]+):)?//(?:([^]]+)@)?([\w\.-]+)$
+/// ```
+///
+/// with Go's ASCII `\w` (`[A-Za-z0-9_]`). Hand-written so the crate carries no
+/// runtime regex engine; `src/url_tests.rs` holds a differential test against
+/// that pattern compiled with the `regex` dev-dependency.
+pub(crate) fn is_codecommit_input(input: &str) -> bool {
+    let Some(rest) = input.strip_prefix("codecommit:") else {
+        return false;
+    };
+
+    // Optional `:<region>:`. The region class excludes `:`, so the region can
+    // only end at the next colon, and that colon must be followed by `//`.
+    let after_region = match rest.strip_prefix(':') {
+        Some(with_region) => {
+            let Some(end) = with_region.find(':') else {
+                return false;
+            };
+            let region = &with_region.as_bytes()[..end];
+            // `[a-z][a-z0-9-]+`: at least two bytes.
+            if region.len() < 2 || !region[0].is_ascii_lowercase() {
+                return false;
+            }
+            let tail_ok = region[1..]
+                .iter()
+                .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !tail_ok {
+                return false;
+            }
+            &with_region[end + 1..]
+        }
+        None => rest,
+    };
+
+    let Some(authority) = after_region.strip_prefix("//") else {
+        return false;
+    };
+
+    // The host class excludes `@`, so the user/host separator can only be the
+    // *last* `@`; ghq's user class `[^]]+` admits `@` and `/` inside the user.
+    let bytes = authority.as_bytes();
+    let (user, host) = match bytes.iter().rposition(|&b| b == b'@') {
+        Some(at) => (Some(&bytes[..at]), &bytes[at + 1..]),
+        None => (None, bytes),
+    };
+
+    if let Some(user) = user
+        && (user.is_empty() || user.contains(&b']'))
+    {
+        return false;
+    }
+
+    // `[\w.-]+`, ASCII: any non-ASCII byte fails here, as it does in Go.
+    !host.is_empty()
+        && host.iter().all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+}
+
 fn parse_codecommit(input: &str) -> Option<(String, Option<String>, Option<String>, String)> {
     let rest = input.strip_prefix("codecommit:")?;
     let (region, rest) = if let Some(after) = rest.strip_prefix(':') {

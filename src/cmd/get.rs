@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, bail};
-use fs2::FileExt;
 
 use crate::cli::GetArgs;
 use crate::vcs::git;
@@ -153,7 +152,7 @@ fn clone_with_lock(url: &str, dest: &Path, args: &Effective) -> anyhow::Result<(
         .truncate(false)
         .open(&lock_path)
         .with_context(|| format!("open lock {}", lock_path.display()))?;
-    if FileExt::try_lock_exclusive(&lock_file).is_err() {
+    if lock_file.try_lock().is_err() {
         eprintln!("another scap process is cloning this repo; exiting");
         std::process::exit(EX_TEMPFAIL);
     }
@@ -183,7 +182,7 @@ fn clone_with_lock(url: &str, dest: &Path, args: &Effective) -> anyhow::Result<(
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&tmp);
     }
-    let _ = FileExt::unlock(&lock_file);
+    let _ = lock_file.unlock();
     let _ = std::fs::remove_file(&lock_path);
     result
 }

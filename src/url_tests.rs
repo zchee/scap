@@ -505,3 +505,90 @@ fn preserves_original_input() {
     let r = from_input("git@github.com:motemen/pusheen-explorer.git", None, false).unwrap();
     assert_eq!(r.original_input, "git@github.com:motemen/pusheen-explorer.git");
 }
+
+// --- W1.3: `is_codecommit_input` (ghq url.go:25) ---------------------------
+
+/// ghq's pattern, for the differential test below. `[^]]` is spelled `[^\]]`
+/// because the `regex` crate does not honour the POSIX "`]` first in a class
+/// is literal" quirk, and `\w` is scoped to `(?-u:)` because Go's `\w` is
+/// ASCII while the crate's is Unicode by default.
+const GHQ_CODECOMMIT_PATTERN: &str =
+    r"^(codecommit):(?::([a-z][a-z0-9-]+):)?//(?:([^\]]+)@)?(?-u:[\w.-])+$";
+
+#[test]
+fn is_codecommit_input_matches_ghq_acceptance_set() {
+    let cases: &[(&str, bool)] = &[
+        // §5 table.
+        ("codecommit://a/b", false),
+        ("codecommit::u://x", false),
+        ("codecommit::US-east-1://x", false),
+        ("codecommit://", false),
+        ("codecommit://user@repo", true),
+        ("codecommit://a/b@c", true),
+        ("codecommit::us-east-1://repo_1.x-y", true),
+        // Divergence-fix rows: ghq's user class is `[^]]+`, not `[^@]+`.
+        ("codecommit://a@b@c", true),
+        ("codecommit://a]b@c", false),
+        // Go's `\w` is ASCII, so a non-ASCII repository name cannot match.
+        ("codecommit://répo", false),
+        // Empty user / empty host / `/` in the host.
+        ("codecommit://a@", false),
+        ("codecommit://@host", false),
+        ("codecommit::us-east-1://a@b/c", false),
+        // Inputs the dispatch in `root_for_url` must keep sending to urlmatch.
+        ("https://github.com/foo/bar", false),
+        ("git@github.com:foo/bar", false),
+        // Regressions the old `[^@]+` pattern already accepted.
+        ("codecommit://my-repo", true),
+        ("codecommit::us-east-1://my-repo", true),
+        ("codecommit://profile@my-repo", true),
+    ];
+
+    for &(input, want) in cases {
+        assert_eq!(is_codecommit_input(input), want, "is_codecommit_input({input:?})");
+    }
+}
+
+#[test]
+fn is_codecommit_input_agrees_with_ghqs_pattern() {
+    let re = regex::Regex::new(GHQ_CODECOMMIT_PATTERN).expect("ghq pattern compiles");
+
+    // Deterministic corpus: every combination of the parts that decide the
+    // pattern's four segments, so the two implementations are compared on the
+    // boundaries rather than on random noise.
+    let prefixes =
+        ["codecommit:", "codecommit::us-east-1:", "codecommit::u:", "codecommit::US:", "git:"];
+    let separators = ["//", "/", ""];
+    let users = ["", "a@", "a@b@", "a]b@", "@", "a/b@"];
+    let hosts = ["repo", "repo_1.x-y", "a/b", "répo", "", "x]", "-"];
+    let suffixes = ["", "/", "]", "@x"];
+
+    let mut checked = 0usize;
+    let mut disagreements = Vec::new();
+    for prefix in prefixes {
+        for separator in separators {
+            for user in users {
+                for host in hosts {
+                    for suffix in suffixes {
+                        let input = format!("{prefix}{separator}{user}{host}{suffix}");
+                        checked += 1;
+                        let got = is_codecommit_input(&input);
+                        let want = re.is_match(&input);
+                        if got != want {
+                            disagreements.push((input, got, want));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(checked >= 200, "corpus too small: {checked} strings");
+    if let Some((input, got, want)) = disagreements.first() {
+        panic!(
+            "{} of {checked} strings disagree with ghq's pattern; first: \
+             {input:?} -> is_codecommit_input {got}, regex {want}",
+            disagreements.len()
+        );
+    }
+}

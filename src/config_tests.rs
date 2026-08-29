@@ -175,15 +175,6 @@ fn scap_complete_user_defaults_false() {
 }
 
 #[test]
-fn is_codecommit_like_matches_explicit_region() {
-    assert!(is_codecommit_like("codecommit::us-east-1://my-repo"));
-    assert!(is_codecommit_like("codecommit://my-repo"));
-    assert!(is_codecommit_like("codecommit://profile@my-repo"));
-    assert!(!is_codecommit_like("https://github.com/foo/bar"));
-    assert!(!is_codecommit_like("git@github.com:foo/bar"));
-}
-
-#[test]
 fn clean_path_normalizes_parent_and_current() {
     assert_eq!(clean_path(Path::new("/a/b/../c")), pb("/a/c"));
     assert_eq!(clean_path(Path::new("/a/./b")), pb("/a/b"));

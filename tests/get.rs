@@ -286,8 +286,6 @@ fn get_rejects_unsupported_vcs() {
 
 #[test]
 fn get_concurrent_clone_exits_75() {
-    use fs2::FileExt;
-
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
     let origin = init_bare_origin();
@@ -300,7 +298,7 @@ fn get_concurrent_clone_exits_75() {
     let lock_path = lock_dir.join(format!(".scap-lock-{name}"));
     let lock_file =
         fs::OpenOptions::new().create(true).write(true).truncate(false).open(&lock_path).unwrap();
-    FileExt::lock_exclusive(&lock_file).unwrap();
+    lock_file.lock().unwrap();
 
     let mut cmd = AssertCommand::cargo_bin("scap").unwrap();
     isolated(&mut cmd, home.path(), root.path());
@@ -309,7 +307,7 @@ fn get_concurrent_clone_exits_75() {
         .code(75)
         .stderr(predicate::str::contains("another scap process"));
 
-    FileExt::unlock(&lock_file).unwrap();
+    lock_file.unlock().unwrap();
 }
 
 #[test]
