@@ -27,10 +27,12 @@ gix-discover = { version = "0.55", features = ["sha1"] }
 # src/cmd/list.rs calls it directly.
 gix-glob = "0.27"
 gix-url = "0.37"
-# Decision D-1: the stale-tmp liveness probe is `kill(pid, 0)` through
-# rustix's safe wrapper instead of a `kill -0` subprocess. Only the `process`
-# feature is requested here; the walker's `fs` feature belongs to Phase 3.
-rustix = { version = "1.1", features = ["process"] }
+# Two safe wrappers, one crate. `process` is Decision D-1's stale-tmp
+# liveness probe, `kill(pid, 0)` instead of a `kill -0` subprocess. `fs` is
+# ADR-9's B2 reader (`openat`, `Dir`, `statat`): the W3.0 gate adopted the
+# safe rustix path over the unsafe `libc` one, which is why the crate holds
+# no `unsafe` and `libc` never enters the dependency graph.
+rustix = { version = "1.1", features = ["process", "fs"] }
 thiserror = { version = "2", default-features = false }
 tracing = { version = "0.1", features = ["attributes"], default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], default-features = false }

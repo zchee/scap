@@ -6,6 +6,7 @@ pub mod config;
 pub mod path;
 pub mod url;
 pub mod vcs;
+pub mod walk;
 
 use clap::Parser;
 use tracing_subscriber::filter::LevelFilter;
