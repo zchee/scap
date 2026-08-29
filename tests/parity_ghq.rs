@@ -80,8 +80,14 @@ fn ghq_binary() -> Option<std::path::PathBuf> {
 /// one of the two tools somewhere the other does not go. Neither `envs()`
 /// nor a fixture gitconfig can express "unset", so [`ghq_cmd`] and
 /// [`scap_cmd`] remove them from every child explicitly.
-const CLEARED: [&str; 10] = [
+const CLEARED: [&str; 12] = [
     "SCAP_CONFIG_BACKEND",
+    // The walker's two knobs. Neither changes what is printed, but a value
+    // inherited from the developer's shell would decide which strategy and
+    // how many workers the comparison ran under, which is not the test's to
+    // choose.
+    "SCAP_LIST_DETECT",
+    "SCAP_LIST_THREADS",
     "GIT_CONFIG_COUNT",
     "GIT_CONFIG_PARAMETERS",
     "GIT_CONFIG_SYSTEM",
@@ -874,5 +880,97 @@ fn list_matches_ghq_for_an_unreadable_root() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.contains("Permission denied"), "{who} stderr: {stderr}");
         assert!(stderr.contains(&root.display().to_string()), "{who} stderr: {stderr}");
+    }
+}
+
+/// ADR-9 rule (vii) meets ghq's naming rule: with one configured root nested
+/// inside another, the *order* of the roots decides what every repository is
+/// called, including the copies the other root's walk found
+/// (`local_repository.go:LocalRepositoryFromFullPath` breaks on the first
+/// root that contains the path).
+///
+/// Both orders are run over the same tree, so a implementation that named a
+/// repository after the root it happened to be walking — which scap did until
+/// this fixture was written — prints the same thing twice and fails one of
+/// them.
+#[test]
+fn list_matches_ghq_for_nested_roots_in_both_orders() {
+    let ghq = oracle!();
+    let home = TempDir::new().unwrap();
+    let base = TempDir::new().unwrap();
+    let outer = base.path().join("outer");
+    let inner = outer.join("inner");
+    init_repo(&outer.join("github.com/a/dup"));
+    init_repo(&outer.join("github.com/b/only"));
+    init_repo(&inner.join("github.com/a/dup"));
+    init_repo(&inner.join("github.com/c/uniq"));
+
+    for (label, roots) in [
+        ("inner first: ", vec![inner.as_path(), outer.as_path()]),
+        ("outer first: ", vec![outer.as_path(), inner.as_path()]),
+    ] {
+        let env = isolated_roots(home.path(), &roots);
+        for flags in [
+            vec!["list"],
+            vec!["list", "-p"],
+            vec!["list", "--unique"],
+            vec!["list", "-e", "dup"],
+            vec!["list", "dup"],
+            vec!["list", "uniq"],
+        ] {
+            compare_stdout(&ghq, &env, &flags, label);
+        }
+    }
+}
+
+/// The one nested-root shape where scap deliberately does not follow ghq
+/// (ADR-13), pinned against the live oracle so the divergence cannot drift
+/// unnoticed in either direction.
+///
+/// ghq tests a root against a repository with `strings.HasPrefix` on raw
+/// bytes, so a root `<base>/one` configured before `<base>/onetwo` claims the
+/// second root's repositories and renders them with `filepath.Rel` as
+/// `../onetwo/…` — a path that lies outside every configured root, that no
+/// scap or ghq command can act on, and that ghq's own `-p` output
+/// contradicts. scap requires the match to land on a component boundary, so
+/// `<base>/onetwo` keeps naming its own repositories.
+///
+/// This test asserts both halves. If a future ghq stops emitting the `..`
+/// form, the first assertion fails loudly and the ADR-13 row can be retired
+/// rather than quietly outliving the defect it records.
+#[test]
+fn sibling_prefix_roots_diverge_from_ghq_by_design() {
+    let ghq = oracle!();
+    let home = TempDir::new().unwrap();
+    let base = TempDir::new().unwrap();
+    let one = base.path().join("one");
+    let onetwo = base.path().join("onetwo");
+    init_repo(&one.join("github.com/a/inone"));
+    init_repo(&onetwo.join("github.com/a/intwo"));
+
+    // `one` first: its spelling is a byte prefix of `onetwo`, so ghq's
+    // prefix test claims the wrong tree.
+    let env = isolated_roots(home.path(), &[one.as_path(), onetwo.as_path()]);
+    let ghq_out = ghq_cmd(&ghq, &env).args(["list"]).output().unwrap();
+    let scap_out = scap_cmd(&env).args(["list"]).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&ghq_out.stdout),
+        "../onetwo/github.com/a/intwo\ngithub.com/a/inone\n",
+        "ghq no longer escapes the root here; retire the ADR-13 row"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&scap_out.stdout),
+        "github.com/a/inone\ngithub.com/a/intwo\n",
+        "scap must name each repository by the root that actually contains it"
+    );
+    // The divergence is in the rendering only: the repositories found, and
+    // their absolute paths, agree.
+    compare_stdout(&ghq, &env, &["list", "-p"], "sibling prefix roots: ");
+
+    // Reversed, ghq's prefix test can no longer misfire and the two agree
+    // on every form.
+    let env = isolated_roots(home.path(), &[onetwo.as_path(), one.as_path()]);
+    for flags in [vec!["list"], vec!["list", "-p"], vec!["list", "--unique"]] {
+        compare_stdout(&ghq, &env, &flags, "sibling prefix roots reversed: ");
     }
 }

@@ -2,8 +2,19 @@ use std::time::Duration;
 
 use super::*;
 
-fn repo<'a>(root: &'a str, rel: &'a str) -> Repo<'a> {
-    Repo { root: Path::new(root), rel: rel.as_bytes(), under_primary: true }
+/// A repository under the test root `/r`, named by that root.
+///
+/// `rel` is a tail of `abs` in the product code too — `run` slices both out
+/// of one buffer — so building them any other way would test a shape that
+/// cannot occur.
+fn repo(abs: &str) -> Repo<'_> {
+    let rel = abs.strip_prefix("/r/").expect("test repositories live under /r");
+    Repo { abs: abs.as_bytes(), rel: rel.as_bytes(), under_primary: true }
+}
+
+/// A repository named by some root other than the primary one.
+fn foreign<'a>(abs: &'a str, rel: &'a str) -> Repo<'a> {
+    Repo { abs: abs.as_bytes(), rel: rel.as_bytes(), under_primary: false }
 }
 
 fn args(query: Option<&str>) -> ListArgs {
@@ -78,24 +89,121 @@ fn push_full_path_joins_the_way_path_join_renders_it() {
     assert_eq!(buf.as_slice(), b"/roots/one/host/\xff\xfe/repo".as_slice());
 }
 
-/// `Path::starts_with` compares whole components and the byte test that
-/// replaced it has to as well: under a primary root `/roots/one`, a
-/// repository below `/roots/onetwo` shares the first ten bytes and is not
-/// under it. Getting this wrong changes which copy of a duplicated path
-/// `--unique` keeps, and changes it silently.
+/// The naming rule's whole predicate. It has to land on a component
+/// boundary: under a root `/roots/one` the path `/roots/onetwo/x` shares nine
+/// bytes and is a different tree. ghq compares raw bytes here and so renders
+/// that repository as `../onetwo/x`, a path outside every configured root —
+/// the divergence ADR-13 records and `list_sibling_prefix_roots_do_not_escape
+/// _the_root` pins against the live oracle.
 #[test]
-fn under_primary_matches_on_component_boundaries_only() {
-    let primary = Path::new("/roots/one");
+fn root_prefix_matches_on_component_boundaries_only() {
+    // The cut is the offset of the naming tail, so the remainder carries no
+    // leading separator.
+    assert_eq!(root_prefix(b"/roots/one", b"/roots/one/github.com/a/x"), Some(11));
+    assert_eq!(&b"/roots/one/github.com/a/x"[11..], b"github.com/a/x".as_slice());
 
-    assert!(under_primary(Some(primary), Path::new("/roots/one"), b"github.com/a/x"));
-    assert!(under_primary(Some(primary), Path::new("/roots/one/deep"), b"a/x"));
-    assert!(!under_primary(Some(primary), Path::new("/roots/onetwo"), b"github.com/a/x"));
-    assert!(!under_primary(Some(primary), Path::new("/roots/two"), b"github.com/a/x"));
-    // The repository *is* the primary root, reached from the root above it.
-    assert!(under_primary(Some(primary), Path::new("/roots"), b"one"));
-    assert!(!under_primary(Some(primary), Path::new("/roots"), b"onetwo"));
-    // No configured root at all: nothing is under the primary one.
-    assert!(!under_primary(None, Path::new("/roots/one"), b"github.com/a/x"));
+    // A root that *is* the repository: the remainder is empty and `run`
+    // renders it as `.`.
+    assert_eq!(root_prefix(b"/roots/one", b"/roots/one"), Some(10));
+
+    // The sibling that shares nine bytes and no component.
+    assert_eq!(root_prefix(b"/roots/one", b"/roots/onetwo/x"), None);
+    // Unrelated, and a root longer than the path.
+    assert_eq!(root_prefix(b"/roots/two", b"/roots/one/x"), None);
+    assert_eq!(root_prefix(b"/roots/one/deep", b"/roots/one"), None);
+
+    // The one root spelling that already ends in a separator.
+    assert_eq!(root_prefix(b"/", b"/github.com/a/x"), Some(1));
+    assert_eq!(root_prefix(b"/", b"/"), Some(1));
+}
+
+/// ghq's rule end to end: the first configured root that contains a
+/// repository names it, so the configured *order* decides what is printed
+/// when one root is nested inside another. Both orders are checked against
+/// the same tree on disk; the repositories found never change, only their
+/// names (`local_repository.go:LocalRepositoryFromFullPath`, measured against
+/// ghq 1.8.0).
+#[test]
+fn the_first_configured_root_that_contains_a_repository_names_it() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let outer = tmp.path().join("outer");
+    let inner = outer.join("inner");
+    for rel in ["github.com/a/dup", "github.com/b/only"] {
+        std::fs::create_dir_all(outer.join(rel).join(".git")).expect("fixture");
+    }
+    std::fs::create_dir_all(inner.join("github.com/c/uniq").join(".git")).expect("fixture");
+
+    let named = |roots: Vec<std::path::PathBuf>| {
+        let opts = WalkOptions::new(2, Vec::new());
+        let listings: Vec<RootListing> =
+            roots.iter().map(|r| walk::walk_root(r, &opts).expect("walk")).collect();
+        let (paths, spans) = name_repositories(&roots, &listings);
+        let mut out: Vec<String> = spans
+            .iter()
+            .map(|s| String::from_utf8_lossy(&paths[s.rel..s.end]).into_owned())
+            .collect();
+        out.sort();
+        out
+    };
+
+    // Inner first: the repository under `inner` is named by `inner`, even the
+    // copy the outer walk found, so its `inner/` segment disappears.
+    assert_eq!(
+        named(vec![inner.clone(), outer.clone()]),
+        vec!["github.com/a/dup", "github.com/b/only", "github.com/c/uniq", "github.com/c/uniq"]
+    );
+    // Outer first: the same repository is named by `outer` from both walks
+    // and keeps the segment. The set on disk did not change.
+    assert_eq!(
+        named(vec![outer, inner]),
+        vec![
+            "github.com/a/dup",
+            "github.com/b/only",
+            "inner/github.com/c/uniq",
+            "inner/github.com/c/uniq",
+        ]
+    );
+}
+
+/// The `--unique` tiebreak follows the naming root: a repository the primary
+/// root does not contain is the copy that loses.
+///
+/// The pairs are asserted exactly rather than as a co-variation between the
+/// flag and the name. Under a last-match rule both would move together — the
+/// repository under `inner` would be named `inner/github.com/b/y` *and* stop
+/// being under the primary root — and a test that only related the two would
+/// still pass.
+#[test]
+fn only_the_primary_root_can_name_a_repository_under_primary() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let outer = tmp.path().join("outer");
+    let inner = outer.join("inner");
+    std::fs::create_dir_all(outer.join("github.com/a/x").join(".git")).expect("fixture");
+    std::fs::create_dir_all(inner.join("github.com/b/y").join(".git")).expect("fixture");
+
+    let roots = vec![inner, outer];
+    let opts = WalkOptions::new(2, Vec::new());
+    let listings: Vec<RootListing> =
+        roots.iter().map(|r| walk::walk_root(r, &opts).expect("walk")).collect();
+    let (paths, spans) = name_repositories(&roots, &listings);
+
+    let mut named: Vec<(String, bool)> = spans
+        .iter()
+        .map(|s| (String::from_utf8_lossy(&paths[s.rel..s.end]).into_owned(), s.under_primary))
+        .collect();
+    named.sort();
+    assert_eq!(
+        named,
+        vec![
+            // Found only by the outer walk, and `inner` does not contain it,
+            // so the second root names it and it is not under the primary.
+            ("github.com/a/x".to_owned(), false),
+            // The same repository twice, once from each walk, and `inner`
+            // names it both times because `inner` comes first.
+            ("github.com/b/y".to_owned(), true),
+            ("github.com/b/y".to_owned(), true),
+        ]
+    );
 }
 
 // -- case folding ----------------------------------------------------------
@@ -137,7 +245,7 @@ fn split_authority_prefix_only_splits_a_host_looking_head() {
 
 #[test]
 fn no_query_keeps_every_repository() {
-    let repos = vec![repo("/r", "github.com/a/x"), repo("/r", "github.com/b/y")];
+    let repos = vec![repo("/r/github.com/a/x"), repo("/r/github.com/b/y")];
     assert_eq!(rels(&filter_repos(repos, &args(None))), vec!["github.com/a/x", "github.com/b/y"]);
 }
 
@@ -145,7 +253,7 @@ fn no_query_keeps_every_repository() {
 /// `scap`, and `hee/scap` is not `zchee/scap`.
 #[test]
 fn exact_query_matches_a_component_tail_and_nothing_else() {
-    let all = || vec![repo("/r", "github.com/zchee/scap"), repo("/r", "github.com/zchee/other")];
+    let all = || vec![repo("/r/github.com/zchee/scap"), repo("/r/github.com/zchee/other")];
     let mut exact = args(Some("scap"));
     exact.exact = true;
     assert_eq!(rels(&filter_repos(all(), &exact)), vec!["github.com/zchee/scap"]);
@@ -164,14 +272,14 @@ fn exact_query_matches_a_component_tail_and_nothing_else() {
 /// is what stops a bare `github` from selecting the whole corpus.
 #[test]
 fn substring_query_ignores_the_host_component() {
-    let all = || vec![repo("/r", "github.com/zchee/scap"), repo("/r", "gitlab.com/other/thing")];
+    let all = || vec![repo("/r/github.com/zchee/scap"), repo("/r/gitlab.com/other/thing")];
     assert_eq!(rels(&filter_repos(all(), &args(Some("zchee")))), vec!["github.com/zchee/scap"]);
     assert!(filter_repos(all(), &args(Some("github"))).is_empty());
 }
 
 #[test]
 fn a_lowercase_query_is_case_insensitive_and_an_uppercase_one_is_literal() {
-    let all = || vec![repo("/r", "github.com/ZChee/Scap"), repo("/r", "github.com/other/thing")];
+    let all = || vec![repo("/r/github.com/ZChee/Scap"), repo("/r/github.com/other/thing")];
     // Smart case: an all-lowercase query folds the haystack.
     assert_eq!(rels(&filter_repos(all(), &args(Some("zchee")))), vec!["github.com/ZChee/Scap"]);
     // Any uppercase in the query makes the match literal.
@@ -183,9 +291,9 @@ fn a_lowercase_query_is_case_insensitive_and_an_uppercase_one_is_literal() {
 fn a_host_prefixed_query_filters_by_host_before_matching_the_rest() {
     let all = || {
         vec![
-            repo("/r", "github.com/zchee/scap"),
-            repo("/r", "gitlab.com/zchee/scap"),
-            repo("/r", "github.com/other/scap"),
+            repo("/r/github.com/zchee/scap"),
+            repo("/r/gitlab.com/zchee/scap"),
+            repo("/r/github.com/other/scap"),
         ]
     };
     assert_eq!(
@@ -204,9 +312,9 @@ fn a_host_prefixed_query_filters_by_host_before_matching_the_rest() {
 #[test]
 fn unique_prints_the_shortest_tail_nothing_else_shares() {
     let repos = vec![
-        repo("/r", "github.com/zchee/scap"),
-        repo("/r", "github.com/other/scap"),
-        repo("/r", "github.com/zchee/solo"),
+        repo("/r/github.com/zchee/scap"),
+        repo("/r/github.com/other/scap"),
+        repo("/r/github.com/zchee/solo"),
     ];
     // `scap` is ambiguous, so both of its repositories fall back to the
     // owner-qualified tail; `solo` is not, so it prints bare.
@@ -219,9 +327,9 @@ fn unique_prints_the_shortest_tail_nothing_else_shares() {
 #[test]
 fn unique_keeps_the_primary_root_copy_of_a_duplicated_path() {
     let repos = vec![
-        Repo { root: Path::new("/primary"), rel: b"github.com/a/dup", under_primary: true },
-        Repo { root: Path::new("/second"), rel: b"github.com/a/dup", under_primary: false },
-        Repo { root: Path::new("/second"), rel: b"github.com/b/solo", under_primary: false },
+        repo("/r/github.com/a/dup"),
+        foreign("/second/github.com/a/dup", "github.com/a/dup"),
+        foreign("/second/github.com/b/solo", "github.com/b/solo"),
     ];
     assert_eq!(rendered(&format_unique(&repos)), vec!["dup", "solo"]);
 }
@@ -237,7 +345,7 @@ fn unique_keeps_the_primary_root_copy_of_a_duplicated_path() {
 /// tails are counted once, so both copies still find `dup` unambiguous.
 #[test]
 fn unique_drops_a_repository_whose_every_tail_belongs_to_another() {
-    let repos = vec![repo("/r", "github.com/a/dup"), repo("/r", "mirror/github.com/a/dup")];
+    let repos = vec![repo("/r/github.com/a/dup"), repo("/r/mirror/github.com/a/dup")];
     assert_eq!(rendered(&format_unique(&repos)), vec!["mirror/github.com/a/dup"]);
 }
 
@@ -246,10 +354,7 @@ fn unique_drops_a_repository_whose_every_tail_belongs_to_another() {
 /// its shortest tail unambiguous.
 #[test]
 fn unique_does_not_drop_a_duplicated_path_that_is_still_unambiguous() {
-    let repos = vec![
-        Repo { root: Path::new("/primary"), rel: b"github.com/a/dup", under_primary: true },
-        Repo { root: Path::new("/primary"), rel: b"github.com/a/dup", under_primary: true },
-    ];
+    let repos = vec![repo("/r/github.com/a/dup"), repo("/r/github.com/a/dup")];
     // Both survive: neither is skipped, because both are under the primary
     // root, and `dup` is unambiguous for each.
     assert_eq!(rendered(&format_unique(&repos)), vec!["dup", "dup"]);

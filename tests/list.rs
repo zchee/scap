@@ -1299,3 +1299,82 @@ fn list_records_the_postprocess_timings_on_its_own_span() {
         assert!(span_field(&stderr, field).is_some(), "no {field} on the close line: {stderr}");
     }
 }
+
+// -- ghq's naming rule: the first configured root that contains a repo -----
+
+/// With one root nested inside another the configured *order* decides what
+/// every repository is called, including the copies the other root's walk
+/// found — ghq `local_repository.go:LocalRepositoryFromFullPath` breaks on
+/// the first root that contains the path.
+///
+/// The same tree is listed twice under the two orders, so an implementation
+/// that named a repository after the root it happened to be walking prints
+/// the same thing both times and fails the second assertion. That is exactly
+/// what scap did before this rule landed. The scap-side twin of the
+/// tests/parity_ghq.rs fixture, so the semantics survive with no ghq
+/// installed.
+#[test]
+fn list_names_each_repository_by_the_first_root_that_contains_it() {
+    let home = TempDir::new().unwrap();
+    let base = TempDir::new().unwrap();
+    let outer = base.path().join("outer");
+    let inner = outer.join("inner");
+    init_repo_at(&outer.join("github.com/a/dup"), false);
+    init_repo_at(&outer.join("github.com/b/only"), false);
+    init_repo_at(&inner.join("github.com/a/dup"), false);
+    init_repo_at(&inner.join("github.com/c/uniq"), false);
+
+    let list = |roots: &[&Path]| {
+        let joined = std::env::join_paths(roots).unwrap();
+        let mut cmd = Command::cargo_bin("scap").unwrap();
+        isolated(&mut cmd, home.path(), base.path());
+        let out = cmd.env("SCAP_ROOT", &joined).arg("list").assert().success();
+        String::from_utf8(out.get_output().stdout.clone()).unwrap()
+    };
+
+    // Inner first: everything under `inner` is named by `inner`, so the
+    // `inner/` segment never appears and `github.com/a/dup` shows up three
+    // times — twice for the repository both walks reach, once for the one
+    // only `outer` holds.
+    assert_eq!(
+        list(&[&inner, &outer]),
+        "github.com/a/dup\ngithub.com/a/dup\ngithub.com/a/dup\n\
+         github.com/b/only\ngithub.com/c/uniq\ngithub.com/c/uniq\n"
+    );
+    // Outer first: the same repositories on disk, now all named by `outer`.
+    assert_eq!(
+        list(&[&outer, &inner]),
+        "github.com/a/dup\ngithub.com/b/only\n\
+         inner/github.com/a/dup\ninner/github.com/a/dup\n\
+         inner/github.com/c/uniq\ninner/github.com/c/uniq\n"
+    );
+}
+
+/// ADR-13: a printed path never leaves the root that names it.
+///
+/// ghq tests a root against a repository with a raw byte prefix, so a root
+/// `one` configured before a sibling `onetwo` claims the sibling's
+/// repositories and renders them as `../onetwo/…`. scap requires the match to
+/// land on a component boundary, so each root names its own tree in either
+/// order. tests/parity_ghq.rs pins both halves against the live oracle; this
+/// keeps the scap side pinned with no ghq installed.
+#[test]
+fn list_never_names_a_repository_outside_the_root_that_holds_it() {
+    let home = TempDir::new().unwrap();
+    let base = TempDir::new().unwrap();
+    let one = base.path().join("one");
+    let onetwo = base.path().join("onetwo");
+    init_repo_at(&one.join("github.com/a/inone"), false);
+    init_repo_at(&onetwo.join("github.com/a/intwo"), false);
+
+    for roots in [[&one, &onetwo], [&onetwo, &one]] {
+        let joined = std::env::join_paths(roots.iter().map(|p| p.as_path())).unwrap();
+        let mut cmd = Command::cargo_bin("scap").unwrap();
+        isolated(&mut cmd, home.path(), base.path());
+        cmd.env("SCAP_ROOT", &joined)
+            .arg("list")
+            .assert()
+            .success()
+            .stdout(predicate::eq("github.com/a/inone\ngithub.com/a/intwo\n"));
+    }
+}

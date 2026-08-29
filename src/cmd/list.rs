@@ -40,21 +40,21 @@ pub struct ListArgs {
 
 /// One repository the walk found, as the post-processing passes see it.
 ///
-/// Nothing here owns a path. `rel` points into the arena of the
-/// [`RootListing`] it came from and `root` into the resolved root list, so
-/// filtering, `--unique` and the byte-order sort all move 24-byte handles
-/// rather than strings — a listing of corpus a+b never allocates per
-/// repository after the walk.
+/// Nothing here owns a path. Both fields point into the one buffer of
+/// absolute paths `run` builds, and `rel` is a tail of `abs`, so filtering,
+/// `--unique` and the byte-order sort all move 16-byte slices rather than
+/// strings.
 struct Repo<'a> {
-    /// The root this repository was found under, exactly as
-    /// `config::resolve_roots` returned it.
-    root: &'a Path,
-    /// Root-relative path bytes, or `.` for a root that is itself a
-    /// repository.
+    /// The repository's absolute path, which is what `-p` prints.
+    abs: &'a [u8],
+    /// The path relative to the root that *names* this repository — see
+    /// [`root_prefix`] — or `.` when that root is the repository itself.
     rel: &'a [u8],
-    /// Whether the repository lies under the *primary* root, which is the
-    /// tiebreak `--unique` applies to a path more than one root holds
-    /// (ghq `cmd_list.go:doList`).
+    /// Whether the naming root is the primary one, which is the tiebreak
+    /// `--unique` applies to a path more than one root holds (ghq
+    /// `cmd_list.go:doList`). The first configured root that contains a
+    /// repository is also the one that names it, so this is exactly "the
+    /// naming root is the first one".
     under_primary: bool,
 }
 
@@ -70,7 +70,6 @@ pub fn run(args: &ListArgs) -> anyhow::Result<()> {
     }
 
     let roots = config::resolve_roots(true)?;
-    let primary = roots.first().map(std::path::PathBuf::as_path);
 
     // One `WalkOptions` for every root: the pattern set and the thread count
     // are process-wide, and the detection strategy is resolved once so a
@@ -87,25 +86,6 @@ pub fn run(args: &ListArgs) -> anyhow::Result<()> {
         listings.push(walk_one(root, &opts)?);
     }
 
-    let repos: Vec<Repo<'_>> = roots
-        .iter()
-        .zip(&listings)
-        .flat_map(|(root, listing)| {
-            let root_under_primary = primary.is_some_and(|p| root.starts_with(p));
-            // The whole root answers for every repository under it, except
-            // where the primary root lies *below* this one — then the answer
-            // is per repository, and only then is a path built to ask.
-            let needs_per_repo =
-                !root_under_primary && primary.is_some_and(|p| p.starts_with(root));
-            listing.repos().map(move |rel| Repo {
-                root: root.as_path(),
-                rel,
-                under_primary: root_under_primary
-                    || (needs_per_repo && under_primary(primary, root, rel)),
-            })
-        })
-        .collect();
-
     // ADR-9's instrumentation rule again: every field a `Span::record` will
     // write has to be declared at creation or the write silently no-ops.
     let span = tracing::debug_span!(
@@ -117,30 +97,33 @@ pub fn run(args: &ListArgs) -> anyhow::Result<()> {
     let _entered = span.enter();
 
     let started = Instant::now();
+    let (paths, spans) = name_repositories(&roots, &listings);
+    let repos: Vec<Repo<'_>> = spans
+        .iter()
+        .map(|span| {
+            let rel = &paths[span.rel..span.end];
+            Repo {
+                abs: &paths[span.start..span.end],
+                // A root that names itself has an empty remainder, and ghq
+                // prints `.` for it (`local_repository.go:54`).
+                rel: if rel.is_empty() { b"." } else { rel },
+                under_primary: span.under_primary,
+            }
+        })
+        .collect();
+    let named = Instant::now();
+
     let repos = filter_repos(repos, args);
     let filtered = Instant::now();
 
-    // `--unique` and the default form both print sub-slices of the walk's own
-    // arena; only `-p` needs bytes that do not exist yet, and it builds them
-    // into one buffer rather than one string per repository. `--unique` wins
-    // over `-p` when both are given, as it did before, so the paths are not
-    // built at all then -- on corpus a+b that is 1,826 joins and ~94 KB
-    // nothing would have read.
-    let full_path_only = args.full_path && !args.unique;
-    let mut full_paths = Vec::new();
-    let mut full_spans = Vec::with_capacity(if full_path_only { repos.len() } else { 0 });
-    if full_path_only {
-        for repo in &repos {
-            let start = full_paths.len();
-            push_full_path(&mut full_paths, repo.root, repo.rel);
-            full_spans.push(start..full_paths.len());
-        }
-    }
-
+    // Every form prints a slice of the same buffer: `-p` the whole absolute
+    // path, `--unique` a tail of the relative one, the default form the
+    // relative path itself. Nothing is rendered twice and nothing is built
+    // that is not printed.
     let mut lines: Vec<&[u8]> = if args.unique {
         format_unique(&repos)
-    } else if full_path_only {
-        full_spans.iter().map(|span| &full_paths[span.clone()]).collect()
+    } else if args.full_path {
+        repos.iter().map(|repo| repo.abs).collect()
     } else {
         repos.iter().map(|repo| repo.rel).collect()
     };
@@ -158,12 +141,94 @@ pub fn run(args: &ListArgs) -> anyhow::Result<()> {
     }
     let done = Instant::now();
 
-    span.record("filter_us", micros(filtered - started));
+    span.record("filter_us", micros(filtered - named));
     span.record("sort_us", micros(sorted - formatted));
-    span.record("format_us", micros((formatted - filtered) + (done - sorted)));
+    span.record("format_us", micros((named - started) + (formatted - filtered) + (done - sorted)));
     drop(_entered);
 
     write_stdout(&buf)
+}
+
+/// Where one repository's absolute path sits in the shared buffer, and where
+/// the part that names it begins.
+struct Naming {
+    start: usize,
+    rel: usize,
+    end: usize,
+    under_primary: bool,
+}
+
+/// Builds every repository's absolute path into one buffer and decides which
+/// configured root names each of them.
+///
+/// ghq's rule, from `local_repository.go:LocalRepositoryFromFullPath`: the
+/// roots are scanned **in configured order** and the first one that contains
+/// the repository names it. So with one root nested inside another the order
+/// alone decides what is printed — `<outer>/inner:<outer>` prints
+/// `github.com/a/x` for a repository under `inner`, and the reverse order
+/// prints `inner/github.com/a/x` for the same repository on disk, including
+/// the copies the *other* root's walk found. Verified against ghq 1.8.0 on a
+/// four-repository fixture in both orders.
+///
+/// Only the roots up to and including the one being walked can win, and the
+/// walked root always contains what its own walk produced, so the scan always
+/// terminates on a real answer.
+///
+/// scap diverges from ghq in one place, deliberately (ADR-13). ghq tests the
+/// prefix with `strings.HasPrefix` on raw bytes, so a root `<T>/one`
+/// configured before `<T>/onetwo` claims the repositories of `<T>/onetwo` and
+/// renders them as `../onetwo/…` — a path outside every configured root, which
+/// ghq's own `-p` output contradicts and which no scap command could act on.
+/// [`root_prefix`] requires the match to land on a component boundary, so the
+/// sibling root keeps naming its own repositories.
+fn name_repositories(
+    roots: &[std::path::PathBuf],
+    listings: &[RootListing],
+) -> (Vec<u8>, Vec<Naming>) {
+    let root_bytes: Vec<&[u8]> =
+        roots.iter().map(|root| root.as_os_str().as_encoded_bytes()).collect();
+    let mut paths = Vec::new();
+    let mut spans = Vec::with_capacity(listings.iter().map(RootListing::len).sum());
+
+    for (walked, (root, listing)) in roots.iter().zip(listings).enumerate() {
+        for rel in listing.repos() {
+            let start = paths.len();
+            push_full_path(&mut paths, root, rel);
+            let end = paths.len();
+
+            let (index, cut) = root_bytes[..=walked]
+                .iter()
+                .enumerate()
+                .find_map(|(i, candidate)| {
+                    root_prefix(candidate, &paths[start..end]).map(|cut| (i, cut))
+                })
+                .expect("the walked root contains every path its own walk produced");
+            spans.push(Naming { start, rel: start + cut, end, under_primary: index == 0 });
+        }
+    }
+    (paths, spans)
+}
+
+/// How much of `abs` to drop for `root` to name it, or `None` when `root`
+/// does not contain it.
+///
+/// The match has to land on a component boundary: under a root `/roots/one`
+/// the path `/roots/onetwo/x` shares nine bytes and is a different tree. Both
+/// arguments come from `config::resolve_roots` or from a walk beneath one, so
+/// both are absolute and already cleaned.
+fn root_prefix(root: &[u8], abs: &[u8]) -> Option<usize> {
+    if !abs.starts_with(root) {
+        return None;
+    }
+    if abs.len() == root.len() {
+        return Some(abs.len());
+    }
+    // The one root that already ends in a separator is `/` itself, and its
+    // children start immediately after it.
+    if root.ends_with(b"/") {
+        return Some(root.len());
+    }
+    (abs[root.len()] == b'/').then(|| root.len() + 1)
 }
 
 /// One `Instant` delta as the whole microseconds a span field can carry.
@@ -216,26 +281,6 @@ fn push_full_path(sink: &mut Vec<u8>, root: &Path, rel: &[u8]) {
         sink.push(b'/');
     }
     sink.extend_from_slice(rel);
-}
-
-/// Whether the repository at `rel` under `root` also lies under `primary`.
-///
-/// Reproduces `Path::starts_with`, which compares whole components: under a
-/// primary root `/a/b`, the path `/a/bc/x` is not a match even though its
-/// bytes begin with the same nine. Both paths come from
-/// `config::resolve_roots`, so both are absolute and already cleaned, and a
-/// component-boundary test on the bytes is the same predicate.
-fn under_primary(primary: Option<&Path>, root: &Path, rel: &[u8]) -> bool {
-    let Some(primary) = primary else {
-        return false;
-    };
-    let primary = primary.as_os_str().as_encoded_bytes();
-    let mut full = Vec::with_capacity(root.as_os_str().len() + rel.len() + 1);
-    push_full_path(&mut full, root, rel);
-    full == primary
-        || (full.len() > primary.len()
-            && full.starts_with(primary)
-            && (full[primary.len()] == b'/' || primary.ends_with(b"/")))
 }
 
 /// Every tail of `rel` that starts on a component boundary, shortest first.
