@@ -187,16 +187,27 @@ impl Fixture {
     }
 }
 
-/// Run `rm --dry-run <target>` and return the destination path from the
-/// message it prints for a path that does not exist.
+/// Run `rm --dry-run <target>` and return the destination path it names.
+///
+/// Both spellings are `rm` reporting what `root_for_url` resolved: a
+/// destination that does not exist is quoted in the `does not exist` error
+/// on stderr, and one that does exist is printed by `--dry-run` itself as
+/// `Would remove <path>` on stdout. A fixture can produce either -- the ghq
+/// oracle creates the directory it prints -- so both are accepted.
 fn dest_message(cmd: &mut Command, target: &str) -> String {
     let output = cmd.args(["rm", "--dry-run", target]).output().expect("run scap rm --dry-run");
-    let text = String::from_utf8_lossy(&output.stderr).into_owned();
-    let start = text.find('"').unwrap_or_else(|| panic!("no quoted path in: {text}"));
-    let end = text[start + 1..]
-        .find('"')
-        .unwrap_or_else(|| panic!("unterminated quoted path in: {text}"));
-    text[start + 1..start + 1 + end].to_owned()
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    if let Some(start) = stderr.find('"') {
+        let end = stderr[start + 1..]
+            .find('"')
+            .unwrap_or_else(|| panic!("unterminated quoted path in: {stderr}"));
+        return stderr[start + 1..start + 1 + end].to_owned();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    stdout
+        .strip_prefix("Would remove ")
+        .map(|path| path.trim_end().to_owned())
+        .unwrap_or_else(|| panic!("no destination in stdout {stdout:?} / stderr {stderr:?}"))
 }
 
 fn stdout_of(cmd: &mut Command) -> String {
@@ -816,9 +827,10 @@ fn symlinked_root_fixture() -> (Fixture, PathBuf, PathBuf) {
 fn codecommit_targets_resolve_against_the_canonicalised_primary_root() {
     // ADR-8 rule (b) at the binary layer, which is the only layer that
     // exercises the spelling production code actually produces:
-    // `url::finalize_codecommit` normalises to
-    // `codecommit://<region>/<owner>/<name>`, and a rule keyed on the raw
-    // `codecommit::<region>://<repo>` form never fires for it.
+    // `url::finalize_codecommit` normalises to `codecommit://<region>/<name>`
+    // (ghq's own `<root>/<region>/<repo>` layout since 7425b1e), and a rule
+    // keyed on the raw `codecommit::<region>://<repo>` form never fires for
+    // it.
     let (f, via_link, resolved) = symlinked_root_fixture();
 
     for backend in BACKENDS {
@@ -879,12 +891,12 @@ fn codecommit_root_component_matches_ghq() {
 
     for backend in BACKENDS {
         let dest = f.resolved_dest(backend, "codecommit::us-east-1://my-repo");
-        // The root component is what rule (b) decides. The path below it is
-        // ghq's `<region>/<repo>` against scap's `<region>/<owner>/<repo>`,
-        // a pre-existing divergence in `url::finalize_codecommit` that is
-        // tracked separately and deliberately not touched here.
+        // The root component is what rule (b) decides, and since 7425b1e
+        // the path below it agrees with ghq's too: both spell a codecommit
+        // destination `<root>/<region>/<repo>`, so the same suffix is
+        // stripped from either side.
         let scap_root = dest
-            .strip_suffix("/us-east-1/codecommit/my-repo")
+            .strip_suffix("/us-east-1/my-repo")
             .unwrap_or_else(|| panic!("unexpected scap destination shape: {dest}"));
         let ghq_root = ghq_dest
             .strip_suffix("/us-east-1/my-repo")
