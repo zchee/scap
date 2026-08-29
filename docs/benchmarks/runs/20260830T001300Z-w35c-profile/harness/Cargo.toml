@@ -1,0 +1,20 @@
+[package]
+name = "w35c-loop"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+scap = { path = "/Users/zchee/rust/src/github.com/zchee/scap" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug-assertions = false
+overflow-checks = false
+
+[workspace]

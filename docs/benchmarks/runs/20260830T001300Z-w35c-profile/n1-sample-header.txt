@@ -1,0 +1,20 @@
+Analysis of sampling w35c-loop (pid 93841) every 1 millisecond
+Process:         w35c-loop [93841]
+Path:            /private/tmp/*/w35c-loop
+Load Address:    0x10248c000
+Identifier:      w35c-loop
+Version:         0
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  bash [17083]
+Target Type:     live task
+
+Date/Time:       2026-08-30 00:14:36.057 +0900
+Launch Time:     2026-08-30 00:14:35.015 +0900
+OS Version:      macOS 27.0 (26A5421a)
+Report Version:  7
+Analysis Tool:   /Applications/Xcode-beta.app/Contents/Developer/usr/bin/sample
+Analysis Tool Version:  Xcode 27.0 (27A5237l)
+
+Physical footprint:         3536K
+Physical footprint (peak):  4512K

@@ -1,0 +1,52 @@
+Sort by top of stack, same collapsed (when >= 5):
+        __openat  (in libsystem_kernel.dylib)        19311
+        __getdirentries64  (in libsystem_kernel.dylib)        17712
+        __ulock_wait  (in libsystem_kernel.dylib)        12140
+        fstatat  (in libsystem_kernel.dylib)        3500
+        __psynch_cvwait  (in libsystem_kernel.dylib)        1867
+        fstatfs  (in libsystem_kernel.dylib)        1840
+        fstat  (in libsystem_kernel.dylib)        1172
+        __close_nocancel  (in libsystem_kernel.dylib)        1147
+        __fcntl_nocancel  (in libsystem_kernel.dylib)        353
+        _platform_memmove  (in libsystem_platform.dylib)        254
+        _xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib)        190
+        _RNvMs1_NtNtCsL88lnnnj9S_4scap4walk3sysNtB5_6Walker8read_dir  (in w35c-loop)        161
+        _xzm_free_tc  (in libsystem_malloc.dylib)        99
+        _xzm_malloc_tc  (in libsystem_malloc.dylib)        82
+        __xzm_xzone_free_to_freelist_chunk  (in libsystem_malloc.dylib)        79
+        _malloc_zone_malloc  (in libsystem_malloc.dylib)        75
+        _platform_strlen  (in libsystem_platform.dylib)        63
+        _free  (in libsystem_malloc.dylib)        60
+        mach_absolute_time  (in libsystem_kernel.dylib)        49
+        _readdir_unlocked  (in libsystem_c.dylib)        46
+        pthread_mutex_unlock  (in libsystem_pthread.dylib)        39
+        pthread_mutex_lock  (in libsystem_pthread.dylib)        37
+        _RINvNtNtCs1FFQFWMTZhA_3std3sys9backtrace28___rust_begin_short_backtraceNCNCNCNvNtNtCsL88lnnnj9S_4scap4walk4pool3runs_000NtNtB1h_3sys3OutEB1j_  (in w35c-loop)        36
+        _RNvXsw_NtNtCsaoYBWCkrEeM_5alloc3ffi5c_strNtNtNtCsfWbVSlt2t4i_4core3ffi5c_str4CStrNtNtB9_6borrow7ToOwned8to_owned  (in w35c-loop)        29
+        _RNvNtNtCsL88lnnnj9S_4scap4walk3sys4cstr  (in w35c-loop)        28
+        __opendir_common  (in libsystem_c.dylib)        28
+        DYLD-STUB$$memcpy  (in w35c-loop)        24
+        _RNvCsbj5FHA3exiX_7___rustc11___rdl_alloc  (in w35c-loop)        24
+        _RNvMs3_NtNtCsfWbVSlt2t4i_4core3ffi5c_strNtB5_4CStr19from_bytes_with_nul  (in w35c-loop)        24
+        DYLD-STUB$$free  (in w35c-loop)        21
+        DYLD-STUB$$__error  (in w35c-loop)        18
+        ???  (in <unknown binary>)  [0x194c2f8e8]        14
+        readdir  (in libsystem_c.dylib)        12
+        DYLD-STUB$$readdir  (in w35c-loop)        11
+        __error  (in libsystem_kernel.dylib)        11
+        malloc  (in libsystem_malloc.dylib)        11
+        _RNvNtNtNtCs4hJOjeQepIm_6rustix7backend2fs8syscalls6statat  (in w35c-loop)        8
+        _pthread_mutex_check_init_slow  (in libsystem_pthread.dylib)        8
+        fdclosedir  (in libsystem_c.dylib)        8
+        fdopendir  (in libsystem_c.dylib)        8
+        malloc_type_malloc  (in libsystem_malloc.dylib)        8
+        openat  (in libsystem_kernel.dylib)        8
+        pthread_mutex_destroy  (in libsystem_pthread.dylib)        8
+        _reclaim_telldir  (in libsystem_c.dylib)        7
+        __bsdthread_create  (in libsystem_kernel.dylib)        6
+        __psynch_cvbroad  (in libsystem_kernel.dylib)        6
+        fcntl$NOCANCEL  (in libsystem_kernel.dylib)        6
+        ???  (in <unknown binary>)  [0x194c2f908]        5
+        _platform_memset  (in libsystem_platform.dylib)        5
+        xzm_malloc_zone_try_free_default_tc  (in libsystem_malloc.dylib)        5
+
