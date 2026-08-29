@@ -166,18 +166,37 @@ impl Fixture {
     /// `scap.user`, `scap.completeUser` and `root_for_url` together without
     /// adding any CLI surface.
     fn resolved_dest(&self, backend: Option<&str>, target: &str) -> String {
-        let output = self
-            .scap(backend)
-            .args(["rm", "--dry-run", target])
-            .output()
-            .expect("run scap rm --dry-run");
-        let text = String::from_utf8_lossy(&output.stderr).into_owned();
-        let start = text.find('"').unwrap_or_else(|| panic!("no quoted path in: {text}"));
-        let end = text[start + 1..]
-            .find('"')
-            .unwrap_or_else(|| panic!("unterminated quoted path in: {text}"));
-        text[start + 1..start + 1 + end].to_owned()
+        dest_message(&mut self.scap(backend), target)
     }
+
+    /// The `/<host>/<owner>/<name>` tail scap appends to whichever root it
+    /// picked, read back by resolving `target` against a root this test
+    /// dictates (`SCAP_ROOT`, ADR-8 rule (a)).
+    ///
+    /// That keeps the oracle's expectation free of any restatement of
+    /// scap's URL normalisation: the tail comes from scap, the root comes
+    /// from git, and the assertion is that the two are concatenated.
+    fn dest_tail(&self, target: &str) -> String {
+        const SENTINEL: &str = "/scap-oracle-sentinel";
+        let mut cmd = self.scap(None);
+        cmd.env("SCAP_ROOT", SENTINEL);
+        let dest = dest_message(&mut cmd, target);
+        dest.strip_prefix(SENTINEL)
+            .unwrap_or_else(|| panic!("{dest} does not start with the sentinel root"))
+            .to_owned()
+    }
+}
+
+/// Run `rm --dry-run <target>` and return the destination path from the
+/// message it prints for a path that does not exist.
+fn dest_message(cmd: &mut Command, target: &str) -> String {
+    let output = cmd.args(["rm", "--dry-run", target]).output().expect("run scap rm --dry-run");
+    let text = String::from_utf8_lossy(&output.stderr).into_owned();
+    let start = text.find('"').unwrap_or_else(|| panic!("no quoted path in: {text}"));
+    let end = text[start + 1..]
+        .find('"')
+        .unwrap_or_else(|| panic!("unterminated quoted path in: {text}"));
+    text[start + 1..start + 1 + end].to_owned()
 }
 
 fn stdout_of(cmd: &mut Command) -> String {
@@ -337,13 +356,98 @@ fn oracle_i_git_config_count_routes_to_the_git_backend_byte_equal() {
 
 // -- oracle (ii): urlmatch delegation ------------------------------------
 
-// Oracle (ii) -- `root_for_url` against `git config --path --get-urlmatch`
-// over 12 URLs x 6 sections, exercising the memoised delegation -- lands
-// with W2.2, which is where the memoisation and the `urlmatch_spawns` span
-// field are implemented. W2.1 keeps the un-memoised spawn, whose correctness
-// on the single-section case is covered by
-// `root_for_url_delegates_to_urlmatch_when_a_url_section_is_visible` in
-// `src/config_tests.rs`.
+/// Six url-scoped sections, one per rule `urlmatch.c` implements: an exact
+/// host, a host with a path prefix, a longer path prefix that must beat the
+/// shorter one, a `*.` wildcard host, a scheme-specific section, and a
+/// `user@host` one. `{plain}` is the last plain `scap.root`.
+fn six_sections(plain: &str) -> String {
+    format!(
+        "[scap]\n\troot = /plain-first\n\troot = {plain}\n\
+         [scap \"https://exact.example.com/\"]\n\troot = /r-exact\n\
+         [scap \"https://pathy.example.com/team\"]\n\troot = /r-path-short\n\
+         [scap \"https://pathy.example.com/team/deep\"]\n\troot = /r-path-long\n\
+         [scap \"https://*.wild.example.com/\"]\n\troot = /r-wild\n\
+         [scap \"ssh://git@sshy.example.com/\"]\n\troot = /r-scheme-user\n\
+         [scap \"https://user@auth.example.com/\"]\n\troot = /r-user\n"
+    )
+}
+
+#[test]
+fn oracle_ii_urlmatch_delegation_matches_git_over_six_sections_and_twelve_urls() {
+    // The last plain root is spelled through a symlinked component, which
+    // is what separates rule (d)/(c) -- git's raw output -- from rule (b)'s
+    // canonicalising fallback, exercised by the codecommit target below.
+    let f = Fixture::new("");
+    std::fs::create_dir_all(f.path().join("real/last")).expect("mkdir real/last");
+    std::os::unix::fs::symlink(f.path().join("real"), f.path().join("lnk")).expect("symlink");
+    let via_link = f.path().join("lnk").join("last");
+    std::fs::write(f.path().join("gitconfig"), six_sections(&via_link.display().to_string()))
+        .expect("rewrite gitconfig");
+    let plain = via_link.display().to_string();
+
+    // Eleven URLs through the delegation: every section matched at least
+    // once, every near miss git resolves to the plain key instead, and the
+    // path-prefix pair proving the longer pattern wins. `rm` normalises its
+    // target to `https://<host>/<owner>/<name>`, so the `ssh://` and
+    // `user@` sections are reachable here only as near misses; they are
+    // matched positively in `root_for_url_matches_git_for_every_url_section_kind`
+    // (src/config_tests.rs), which drives the same six sections directly.
+    let cases: [(&str, &str); 11] = [
+        ("https://exact.example.com/o/n", "/r-exact"),
+        ("https://exact.example.com/other/repo", "/r-exact"),
+        ("https://pathy.example.com/team/repo", "/r-path-short"),
+        ("https://pathy.example.com/team/deep", "/r-path-long"),
+        ("https://foo.wild.example.com/o/n", "/r-wild"),
+        ("https://wild.example.com/o/n", &plain),
+        ("https://sub.foo.wild.example.com/o/n", &plain),
+        ("https://sshy.example.com/o/n", &plain),
+        ("https://auth.example.com/o/n", &plain),
+        ("https://pathy.example.com/other/repo", &plain),
+        ("https://nomatch.example.com/o/n", &plain),
+    ];
+
+    for (target, expected_root) in cases {
+        // git is the oracle; the label only guards against a fixture where
+        // every URL collapses to the plain key and nothing is exercised.
+        let oracle = f.git_lines(&["config", "--path", "--get-urlmatch", "scap.root", target]);
+        assert_eq!(
+            oracle,
+            [expected_root.to_owned()],
+            "the fixture must exercise the section under test for {target}"
+        );
+
+        let tail = f.dest_tail(target);
+        for backend in BACKENDS {
+            assert_eq!(
+                f.resolved_dest(backend, target),
+                format!("{expected_root}{tail}"),
+                "{target} must resolve to git's own urlmatch answer under {}",
+                backend_name(backend)
+            );
+        }
+    }
+
+    // The twelfth URL: a codecommit target skips urlmatch entirely (rule b)
+    // and takes ghq's canonicalised primary root, so here it must *not*
+    // follow git's urlmatch answer -- which is the raw symlinked spelling.
+    let codecommit = "codecommit::us-east-1://my-repo";
+    let last_plain = f
+        .git_lines(&["config", "--path", "--get-all", "scap.root"])
+        .pop()
+        .expect("the fixture sets scap.root");
+    let canonical = std::fs::canonicalize(&last_plain).expect("the symlink target exists");
+    assert_ne!(canonical.display().to_string(), last_plain, "the fixture must cross a symlink");
+
+    let tail = f.dest_tail(codecommit);
+    for backend in BACKENDS {
+        assert_eq!(
+            f.resolved_dest(backend, codecommit),
+            format!("{}{tail}", canonical.display()),
+            "a codecommit target takes rule (b), not the urlmatch answer, under {}",
+            backend_name(backend)
+        );
+    }
+}
 
 // -- oracle (iii): GIT_CONFIG_SYSTEM -------------------------------------
 

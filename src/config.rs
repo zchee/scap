@@ -13,9 +13,11 @@
 //! last two `set_var` call sites, and with them the last unchecked blocks
 //! anywhere in `src/`.
 
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use bstr::{BStr, ByteSlice};
 
@@ -160,6 +162,40 @@ fn non_empty_var_os(key: &str) -> Option<OsString> {
     std::env::var_os(key).filter(|v| !v.is_empty())
 }
 
+/// git's answer to one `--get-urlmatch` question: the matched root, or
+/// `None` when git exits 1 (no `scap.root` configured anywhere) or prints
+/// nothing, both of which send [`ConfigSnapshot::root_for_url`] on to ADR-8
+/// rules (c)/(e).
+type UrlmatchAnswer = Option<PathBuf>;
+
+/// One memo slot, `None` until the answer is known.
+type UrlmatchCell = Arc<Mutex<Option<UrlmatchAnswer>>>;
+
+/// The process's `git config --path --get-urlmatch` memo (ADR-8 rule d).
+///
+/// A slot per distinct URL rather than one lock over the whole map: the
+/// slot's mutex is held across the spawn, so two threads asking the same
+/// question share one answer instead of racing to spawn two `git`s, while
+/// threads asking different questions never wait on each other -- which is
+/// what `get --parallel` does with six workers.
+#[derive(Debug, Default)]
+struct UrlmatchMemo {
+    cells: Mutex<HashMap<String, UrlmatchCell>>,
+    /// How many `--get-urlmatch` processes this one has actually run; the
+    /// `urlmatch_spawns` span field.
+    spawns: AtomicUsize,
+}
+
+/// Lock a memo mutex, ignoring poisoning.
+///
+/// A panicking thread leaves nothing half-written here -- a slot holds
+/// either the answer or nothing at all -- so refusing every later caller
+/// because an unrelated thread panicked would only make a working process
+/// worse.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The `scap.*` configuration of this process, as one immutable value.
 #[derive(Debug, Clone)]
 pub struct ConfigSnapshot {
@@ -176,6 +212,13 @@ pub struct ConfigSnapshot {
     list_cache: bool,
     backend: Backend,
     reason: Reason,
+    /// Rule (d)'s per-URL memo. Every clone of a snapshot shares it, and
+    /// [`snapshot`] hands out exactly one snapshot per process, so the spawn
+    /// count is per process as ADR-8 requires. It lives here rather than in
+    /// a `static` so that unit tests, which build many snapshots over
+    /// different fixtures in one process, cannot answer each other's
+    /// questions -- and so that the A3 backend gets the same memo for free.
+    urlmatch: Arc<UrlmatchMemo>,
 }
 
 impl ConfigSnapshot {
@@ -285,13 +328,18 @@ fn git_config_count_applies(value: &OsStr) -> bool {
 pub fn load(env: &Env) -> Result<ConfigSnapshot, ConfigError> {
     // ADR-9's instrumentation lesson: `Span::record` on a field that was not
     // declared at creation silently no-ops, so every field is declared here.
+    //
+    // `urlmatch_spawns` is *not* declared here, although plan §7 lists it
+    // among this span's fields: rule (d) runs from `root_for_url`, long
+    // after `load` returned and this span closed, so the only value it
+    // could ever carry here is zero. The count is recorded where it is
+    // real, on the per-lookup `scap::config::urlmatch` span below.
     let span = tracing::debug_span!(
         "scap::config::load",
         backend = tracing::field::Empty,
         reason = tracing::field::Empty,
         sources = tracing::field::Empty,
         url_sections = tracing::field::Empty,
-        urlmatch_spawns = tracing::field::Empty,
     );
     let _entered = span.enter();
 
@@ -556,6 +604,7 @@ fn from_file(file: Option<&gix_config::File>, env: &Env) -> ConfigSnapshot {
         list_cache,
         backend: Backend::InProcess,
         reason,
+        urlmatch: Default::default(),
     }
 }
 
@@ -664,11 +713,49 @@ impl ConfigSnapshot {
         Some(std::env::split_paths(value).collect())
     }
 
-    /// ADR-8 rule (d): `git config --path --get-urlmatch scap.root <url>`.
+    /// ADR-8 rule (d): `git config --path --get-urlmatch scap.root <url>`,
+    /// memoised per distinct URL for the life of the process.
     ///
-    /// One spawn per call in W2.1; memoisation per distinct URL lands in
-    /// W2.2 together with the `urlmatch_spawns` span field.
-    fn urlmatch(&self, url: &str) -> Result<Option<PathBuf>, ConfigError> {
+    /// This delegation is the only `git` spawn left anywhere on the
+    /// configuration path, and only a user with url-scoped `[scap "<url>"]`
+    /// sections reaches it at all. Memoising it means `get --parallel` pays
+    /// at most one spawn per *distinct* URL rather than one per target --
+    /// against ghq's three per target -- and a repeated target pays none.
+    ///
+    /// An error is deliberately not memoised: every one of them is fatal to
+    /// the caller (ADR-8 fails fast rather than degrading), so there is no
+    /// second call to answer, and caching a transient `git` failure would
+    /// only make a later diagnosis harder.
+    fn urlmatch(&self, url: &str) -> Result<UrlmatchAnswer, ConfigError> {
+        let span = tracing::debug_span!(
+            "scap::config::urlmatch",
+            url,
+            spawned = tracing::field::Empty,
+            urlmatch_spawns = tracing::field::Empty,
+        );
+        let _entered = span.enter();
+
+        let cell = {
+            let mut cells = lock(&self.urlmatch.cells);
+            Arc::clone(cells.entry(url.to_owned()).or_default())
+        };
+        let mut slot = lock(&cell);
+
+        if let Some(answer) = slot.as_ref() {
+            span.record("spawned", false);
+            span.record("urlmatch_spawns", self.urlmatch.spawns.load(Ordering::Relaxed));
+            return Ok(answer.clone());
+        }
+
+        let answer = self.urlmatch_spawn(url)?;
+        span.record("spawned", true);
+        span.record("urlmatch_spawns", self.urlmatch.spawns.load(Ordering::Relaxed));
+        *slot = Some(answer.clone());
+        Ok(answer)
+    }
+
+    /// Run one `git config --path --get-urlmatch` and count it.
+    fn urlmatch_spawn(&self, url: &str) -> Result<UrlmatchAnswer, ConfigError> {
         // Resolved here rather than when the snapshot is built: walking
         // `PATH` costs one `stat` per entry, and the default path -- no
         // trigger, no url-scoped section -- never spawns anything.
@@ -679,6 +766,9 @@ impl ConfigSnapshot {
         command.args(["config", "--path", "--get-urlmatch", "scap.root", url]);
         git_backend::apply_env(&mut command, &self.env);
         let output = command.output()?;
+        // Counted once the process has actually run and been reaped: an
+        // `exec` that never got off the ground is not a spawn.
+        self.urlmatch.spawns.fetch_add(1, Ordering::Relaxed);
         match output.status.code() {
             Some(0) => {
                 let stdout =

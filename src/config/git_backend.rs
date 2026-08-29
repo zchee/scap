@@ -126,6 +126,9 @@ fn from_listing(listing: &[u8], env: &Env, reason: Reason) -> ConfigSnapshot {
         list_cache,
         backend: Backend::Git,
         reason,
+        // ADR-8 rule (d) is one shared code path, so the A3 snapshot gets
+        // the same per-URL `--get-urlmatch` memo the in-process one has.
+        urlmatch: Default::default(),
     }
 }
 

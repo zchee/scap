@@ -691,6 +691,250 @@ fn root_for_url_falls_back_to_the_home_root_when_nothing_is_configured() {
     );
 }
 
+// -- rule (d): the memoised urlmatch delegation (W2.2) --------------------
+
+/// The six url-scoped section kinds git's `urlmatch.c` distinguishes:
+/// an exact host, a host with a path prefix, a longer path prefix that must
+/// beat the shorter one, a `*.` wildcard host, a scheme-specific section,
+/// and a `user@host` one.
+const SIX_SECTIONS: &str = "[scap]\n\troot = /plain-first\n\troot = /plain-last\n\
+     [scap \"https://exact.example.com/\"]\n\troot = /r-exact\n\
+     [scap \"https://pathy.example.com/team\"]\n\troot = /r-path-short\n\
+     [scap \"https://pathy.example.com/team/deep\"]\n\troot = /r-path-long\n\
+     [scap \"https://*.wild.example.com/\"]\n\troot = /r-wild\n\
+     [scap \"ssh://git@sshy.example.com/\"]\n\troot = /r-scheme-user\n\
+     [scap \"https://user@auth.example.com/\"]\n\troot = /r-user\n";
+
+/// A recording `git`: a script that appends its arguments to a log and then
+/// `exec`s the real binary, so the delegation genuinely runs and its spawns
+/// stay countable. Both paths are baked into the script text, so nothing has
+/// to be exported into this process's environment -- which is what keeps
+/// these tests free of the `set_var` W2.1 deleted.
+struct RecordingGit {
+    log: PathBuf,
+}
+
+impl RecordingGit {
+    /// Every recorded invocation, in order, one entry per `git` call.
+    fn lines(&self) -> Vec<String> {
+        std::fs::read_to_string(&self.log)
+            .expect("read the recording log")
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Only the rule (d) delegations.
+    fn urlmatch_lines(&self) -> Vec<String> {
+        self.lines()
+            .into_iter()
+            .filter(|line| line.starts_with("config --path --get-urlmatch"))
+            .collect()
+    }
+}
+
+impl Fixture {
+    /// A recording `git` in this fixture, and the [`Env`] whose `PATH` holds
+    /// that wrapper and nothing else, so every `git` scap runs is recorded.
+    fn recording_git(&self) -> (RecordingGit, Env) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let real = sources::resolve_git_program(&self.env()).expect("a real git on PATH");
+        let bin = self.root.join("recording-bin");
+        std::fs::create_dir_all(&bin).expect("mkdir the recording bin dir");
+        let log = self.root.join("git-invocations.log");
+        std::fs::write(&log, "").expect("create the recording log");
+
+        let script = bin.join("git");
+        std::fs::write(
+            &script,
+            // `"$*"` joins on the first character of IFS -- a space -- and
+            // writes exactly one line per invocation.
+            format!(
+                "#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"{}\"\nexec \"{}\" \"$@\"\n",
+                log.display(),
+                real.display()
+            ),
+        )
+        .expect("write the recording script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x the recording script");
+
+        let env = Env { path: Some(bin.into_os_string()), ..self.env() };
+        (RecordingGit { log }, env)
+    }
+}
+
+/// Ask the real `git` the rule (d) question, through the same [`Env`].
+fn git_urlmatch(env: &Env, url: &str) -> Option<PathBuf> {
+    let program = sources::resolve_git_program(env).expect("a real git on PATH");
+    let mut command = std::process::Command::new(program);
+    command.args(["config", "--path", "--get-urlmatch", "scap.root", url]);
+    git_backend::apply_env(&mut command, env);
+    let output = command.output().expect("run git config --get-urlmatch");
+    match output.status.code() {
+        Some(0) => {
+            let stdout = String::from_utf8(output.stdout).expect("utf-8 git output");
+            let trimmed = stdout.trim();
+            (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+        }
+        // git exits 1 when `scap.root` is set nowhere at all.
+        Some(1) => None,
+        other => panic!("git config --get-urlmatch exited {other:?} for {url}"),
+    }
+}
+
+#[test]
+fn root_for_url_matches_git_for_every_url_section_kind() {
+    // The two spellings only `get --ssh` produces -- an `ssh://` scheme and
+    // a `user@host` authority -- are unreachable through `rm`/`create`,
+    // which normalise to `https://<host>/<owner>/<name>`, so the integration
+    // matrix in tests/config_oracle.rs covers those two sections only
+    // negatively. Here they are matched positively, with git as the oracle.
+    let f = Fixture::new();
+    f.write("home/.gitconfig", SIX_SECTIONS);
+    let env = f.env();
+    let snapshot = load_ok(&env);
+
+    for (url, expected) in [
+        ("https://exact.example.com/o/n", "/r-exact"),
+        ("https://pathy.example.com/team/repo", "/r-path-short"),
+        ("https://pathy.example.com/team/deep", "/r-path-long"),
+        ("https://foo.wild.example.com/o/n", "/r-wild"),
+        ("ssh://git@sshy.example.com/o/n", "/r-scheme-user"),
+        ("https://user@auth.example.com/o/n", "/r-user"),
+        // The same two sections, asked without the scheme or the user that
+        // makes them match: git falls back to the plain key, so scap must.
+        ("https://sshy.example.com/o/n", "/plain-last"),
+        ("https://auth.example.com/o/n", "/plain-last"),
+        ("https://nomatch.example.com/o/n", "/plain-last"),
+    ] {
+        // The fixture is only meaningful if each section really is the one
+        // git picks; that is what makes an all-fallback fixture impossible.
+        assert_eq!(
+            git_urlmatch(&env, url),
+            Some(pb(expected)),
+            "the oracle must exercise the section under test for {url}"
+        );
+        assert_eq!(snapshot.root_for_url(url).expect("root"), pb(expected), "{url}");
+    }
+}
+
+#[test]
+fn urlmatch_spawns_once_per_distinct_url() {
+    let f = Fixture::new();
+    f.write(
+        "home/.gitconfig",
+        "[scap]\n\troot = /plain\n\
+         [scap \"https://one.example.com/\"]\n\troot = /r-one\n\
+         [scap \"https://two.example.com/\"]\n\troot = /r-two\n",
+    );
+    let (git, env) = f.recording_git();
+    let snapshot = load_ok(&env);
+
+    let urls = [
+        ("https://one.example.com/o/n", "/r-one"),
+        ("https://two.example.com/o/n", "/r-two"),
+        // No section matches this one: git's answer is the plain key, and
+        // that answer is memoised too.
+        ("https://three.example.com/o/n", "/plain"),
+    ];
+
+    // Interleaved rather than grouped, so a memo that only remembered the
+    // most recent question would still spawn six times.
+    for _ in 0..3 {
+        for (url, expected) in urls {
+            assert_eq!(snapshot.root_for_url(url).expect("root"), pb(expected), "{url}");
+        }
+    }
+
+    assert_eq!(
+        git.urlmatch_lines().len(),
+        urls.len(),
+        "one spawn per distinct URL, not per lookup: {:?}",
+        git.urlmatch_lines()
+    );
+    assert_eq!(
+        git.lines().len(),
+        urls.len(),
+        "the delegations must be the only `git` this process ran: {:?}",
+        git.lines()
+    );
+}
+
+#[test]
+fn concurrent_lookups_of_one_url_spawn_git_once() {
+    // `get --parallel` runs six workers over one queue, so two of them can
+    // reach rule (d) with the same URL at the same time.
+    let f = Fixture::new();
+    f.write(
+        "home/.gitconfig",
+        "[scap]\n\troot = /plain\n[scap \"https://one.example.com/\"]\n\troot = /r-one\n",
+    );
+    let (git, env) = f.recording_git();
+    let snapshot = load_ok(&env);
+    let url = "https://one.example.com/o/n";
+
+    std::thread::scope(|scope| {
+        for _ in 0..6 {
+            let snapshot = &snapshot;
+            scope.spawn(move || {
+                assert_eq!(snapshot.root_for_url(url).expect("root"), pb("/r-one"));
+            });
+        }
+    });
+
+    assert_eq!(
+        git.urlmatch_lines().len(),
+        1,
+        "six concurrent lookups of one URL must share one answer: {:?}",
+        git.urlmatch_lines()
+    );
+}
+
+#[test]
+fn root_for_url_never_spawns_git_without_url_sections() {
+    // The W2.1 guarantee, kept as a regression test: rule (c) answers from
+    // the in-process snapshot, so nothing is delegated at all.
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\troot = /first\n\troot = /plain-last\n");
+    let (git, env) = f.recording_git();
+    let snapshot = load_ok(&env);
+
+    for url in ["https://one.example.com/o/n", "https://two.example.com/o/n"] {
+        assert_eq!(snapshot.root_for_url(url).expect("root"), pb("/plain-last"), "{url}");
+    }
+
+    assert!(git.lines().is_empty(), "no url sections must mean no spawn: {:?}", git.lines());
+}
+
+#[test]
+fn rule_d_without_git_on_path_is_fatal_rather_than_a_silent_fallback() {
+    let f = Fixture::new();
+    f.write(
+        "home/.gitconfig",
+        "[scap]\n\troot = /plain\n[scap \"https://one.example.com/\"]\n\troot = /r-one\n",
+    );
+    std::fs::create_dir_all(f.path().join("empty-bin")).expect("mkdir empty-bin");
+
+    let env = Env { path: Some(f.path().join("empty-bin").into_os_string()), ..f.env() };
+    let snapshot = load_ok(&env);
+
+    // The snapshot itself still loads in process; only rule (d) needs git.
+    assert_eq!(snapshot.backend(), Backend::InProcess);
+    assert_eq!(snapshot.reason(), Reason::UrlSections);
+    assert_eq!(snapshot.reason().to_string(), "url_sections");
+
+    let url = "https://one.example.com/o/n";
+    for attempt in 0..2 {
+        let err = snapshot.root_for_url(url).expect_err("rule (d) cannot be answered without git");
+        assert!(
+            matches!(err, ConfigError::GitRequired { reason } if reason.contains("url-scoped")),
+            "attempt {attempt} must name the trigger, got: {err}"
+        );
+    }
+}
+
 // -- process-wide snapshot and helpers ------------------------------------
 
 #[test]
