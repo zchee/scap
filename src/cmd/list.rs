@@ -1,24 +1,13 @@
-use std::collections::{HashMap, HashSet};
-use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::HashMap;
+use std::io::{self, Write};
+use std::path::Path;
+use std::time::Instant;
 
-use bstr::ByteSlice;
 use clap::Args;
-use gix_glob::wildmatch;
-use jwalk::{Parallelism, ReadChildren, WalkDirGeneric};
+use memchr::{memchr, memmem, memrchr_iter};
 
 use crate::config;
-
-/// Size of the rayon pool each root is walked on.
-///
-/// Four is the thread count the W0.2 matrix selected for every walker
-/// variant on corpus a+b, and it is what this walker already used. Phase 3
-/// makes it configurable through `SCAP_LIST_THREADS`; until then it is a
-/// constant so the `threads` span field never reports a number the walk did
-/// not actually use.
-const WALK_THREADS: usize = 4;
+use crate::walk::{self, Pattern, RootListing, WalkOptions};
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
@@ -49,32 +38,24 @@ pub struct ListArgs {
     pub query: Option<String>,
 }
 
-struct DiscoveredRepo {
-    full_path: PathBuf,
-    rel_path: String,
-    rel_parts: Vec<String>,
-    is_under_primary: bool,
-}
-
-impl DiscoveredRepo {
-    fn rel_path(&self) -> String {
-        self.rel_path.clone()
-    }
-
-    // ghq local_repository.go:NonHostPath — path without the leading host segment.
-    fn non_host_path(&self) -> String {
-        if self.rel_parts.len() <= 1 { String::new() } else { self.rel_parts[1..].join("/") }
-    }
-
-    // ghq local_repository.go:Subpaths — tails of the relative path, shortest first.
-    fn subpaths(&self) -> Vec<String> {
-        let n = self.rel_parts.len();
-        (0..n).map(|i| self.rel_parts[n - (i + 1)..].join("/")).collect()
-    }
-
-    fn matches_exact(&self, query: &str) -> bool {
-        self.subpaths().iter().any(|p| p == query)
-    }
+/// One repository the walk found, as the post-processing passes see it.
+///
+/// Nothing here owns a path. `rel` points into the arena of the
+/// [`RootListing`] it came from and `root` into the resolved root list, so
+/// filtering, `--unique` and the byte-order sort all move 24-byte handles
+/// rather than strings — a listing of corpus a+b never allocates per
+/// repository after the walk.
+struct Repo<'a> {
+    /// The root this repository was found under, exactly as
+    /// `config::resolve_roots` returned it.
+    root: &'a Path,
+    /// Root-relative path bytes, or `.` for a root that is itself a
+    /// repository.
+    rel: &'a [u8],
+    /// Whether the repository lies under the *primary* root, which is the
+    /// tiebreak `--unique` applies to a path more than one root holds
+    /// (ghq `cmd_list.go:doList`).
+    under_primary: bool,
 }
 
 // ghq cmd_list.go:doList.
@@ -89,434 +70,260 @@ pub fn run(args: &ListArgs) -> anyhow::Result<()> {
     }
 
     let roots = config::resolve_roots(true)?;
-    let primary = roots.first().cloned();
+    let primary = roots.first().map(std::path::PathBuf::as_path);
 
-    let mut repos = Vec::new();
+    // One `WalkOptions` for every root: the pattern set and the thread count
+    // are process-wide, and the detection strategy is resolved once so a
+    // multi-root listing cannot walk two roots two different ways.
+    let opts = WalkOptions::new(
+        walk::threads_from_env(),
+        config::snapshot().list_exclude().iter().map(|p| Pattern::new(p)).collect(),
+    );
+
+    // Rule (vii): roots are walked in order and never deduplicated against
+    // each other, so a repository two roots both hold is printed twice.
+    let mut listings = Vec::with_capacity(roots.len());
     for root in &roots {
-        walk_for_repos(root, &mut repos, primary.as_deref())?;
+        listings.push(walk_one(root, &opts)?);
     }
 
+    let repos: Vec<Repo<'_>> = roots
+        .iter()
+        .zip(&listings)
+        .flat_map(|(root, listing)| {
+            let root_under_primary = primary.is_some_and(|p| root.starts_with(p));
+            // The whole root answers for every repository under it, except
+            // where the primary root lies *below* this one — then the answer
+            // is per repository, and only then is a path built to ask.
+            let needs_per_repo =
+                !root_under_primary && primary.is_some_and(|p| p.starts_with(root));
+            listing.repos().map(move |rel| Repo {
+                root: root.as_path(),
+                rel,
+                under_primary: root_under_primary
+                    || (needs_per_repo && under_primary(primary, root, rel)),
+            })
+        })
+        .collect();
+
+    // ADR-9's instrumentation rule again: every field a `Span::record` will
+    // write has to be declared at creation or the write silently no-ops.
+    let span = tracing::debug_span!(
+        "scap::list::postprocess",
+        filter_us = tracing::field::Empty,
+        sort_us = tracing::field::Empty,
+        format_us = tracing::field::Empty,
+    );
+    let _entered = span.enter();
+
+    let started = Instant::now();
     let repos = filter_repos(repos, args);
+    let filtered = Instant::now();
 
-    let lines = if args.unique {
+    // `--unique` and the default form both print sub-slices of the walk's own
+    // arena; only `-p` needs bytes that do not exist yet, and it builds them
+    // into one buffer rather than one string per repository. `--unique` wins
+    // over `-p` when both are given, as it did before, so the paths are not
+    // built at all then -- on corpus a+b that is 1,826 joins and ~94 KB
+    // nothing would have read.
+    let full_path_only = args.full_path && !args.unique;
+    let mut full_paths = Vec::new();
+    let mut full_spans = Vec::with_capacity(if full_path_only { repos.len() } else { 0 });
+    if full_path_only {
+        for repo in &repos {
+            let start = full_paths.len();
+            push_full_path(&mut full_paths, repo.root, repo.rel);
+            full_spans.push(start..full_paths.len());
+        }
+    }
+
+    let mut lines: Vec<&[u8]> = if args.unique {
         format_unique(&repos)
-    } else if args.full_path {
-        repos.iter().map(|r| r.full_path.display().to_string()).collect::<Vec<_>>()
+    } else if full_path_only {
+        full_spans.iter().map(|span| &full_paths[span.clone()]).collect()
     } else {
-        repos.iter().map(|r| r.rel_path()).collect::<Vec<_>>()
+        repos.iter().map(|repo| repo.rel).collect()
     };
+    let formatted = Instant::now();
 
-    let mut sorted = lines;
-    sorted.sort_unstable();
-    let stdout = io::stdout();
-    let mut out = BufWriter::new(stdout.lock());
-    for line in sorted {
-        writeln!(out, "{line}")?;
+    // Byte order on the rendered line, which is what `Vec<String>::sort` was
+    // doing before: `String`'s ordering is its bytes'.
+    lines.sort_unstable();
+    let sorted = Instant::now();
+
+    let mut buf = Vec::with_capacity(lines.iter().map(|line| line.len() + 1).sum());
+    for line in &lines {
+        buf.extend_from_slice(line);
+        buf.push(b'\n');
     }
-    Ok(())
+    let done = Instant::now();
+
+    span.record("filter_us", micros(filtered - started));
+    span.record("sort_us", micros(sorted - formatted));
+    span.record("format_us", micros((formatted - filtered) + (done - sorted)));
+    drop(_entered);
+
+    write_stdout(&buf)
 }
 
-fn walk_for_repos(
-    root: &Path,
-    out: &mut Vec<DiscoveredRepo>,
-    primary: Option<&Path>,
-) -> anyhow::Result<()> {
-    let mut seen = HashSet::new();
-    walk_for_repos_with_seen(root, out, primary, &mut seen)
+/// One `Instant` delta as the whole microseconds a span field can carry.
+///
+/// `tracing` has no `u128` value, and the saturation can only be reached by a
+/// listing that spent 584,000 years in one pass.
+fn micros(elapsed: std::time::Duration) -> u64 {
+    u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX)
 }
 
-fn walk_for_repos_with_seen(
-    root: &Path,
-    out: &mut Vec<DiscoveredRepo>,
-    primary: Option<&Path>,
-    seen: &mut HashSet<PathBuf>,
-) -> anyhow::Result<()> {
-    if !root_is_walkable(root) {
-        return Ok(());
-    }
-
-    // ADR-9's instrumentation rule: a field `Span::record` will write later
-    // has to be declared at creation, or the write silently no-ops and the
-    // close line never carries it.
+/// Walks one root, recording ADR-9's counters on the `scap::walk::root` span.
+///
+/// The span is opened for every root the command was given, including one the
+/// walk turns out not to be able to read: a root that contributed nothing is
+/// exactly the case where the counters are worth having, and `dirs_read = 0`
+/// says so unambiguously.
+fn walk_one(root: &Path, opts: &WalkOptions) -> anyhow::Result<RootListing> {
     let span = tracing::debug_span!(
         "scap::walk::root",
         path = %root.display(),
         dirs_read = tracing::field::Empty,
         excluded = tracing::field::Empty,
         repos = tracing::field::Empty,
-        threads = WALK_THREADS,
+        threads = opts.threads,
     );
     let _entered = span.enter();
-    let before = out.len();
 
-    if is_repo_path(root) {
-        maybe_push_repo(root.to_path_buf(), root, out, primary, seen);
-        span.record("dirs_read", 0usize);
-        span.record("excluded", 0usize);
-        span.record("repos", out.len() - before);
-        return Ok(());
-    }
-
-    // ADR-9's mechanics: `process_read_dir` is `Fn + Send + Sync + 'static`
-    // and runs on the rayon workers, so the counters are shared atomics
-    // rather than captured locals.
-    let dirs_read = Arc::new(AtomicUsize::new(0));
-    let excluded = Arc::new(AtomicUsize::new(0));
-    let (walk_dirs_read, walk_excluded) = (Arc::clone(&dirs_read), Arc::clone(&excluded));
-    // `&'static ConfigSnapshot`, so the patterns need no copy to outlive the
-    // closure.
-    let patterns: &'static [String] = config::snapshot().list_exclude();
-    let walk_root: Arc<Path> = Arc::from(root);
-
-    let walker = WalkDirGeneric::<((), bool)>::new(root)
-        // ADR-9 rule (iii): jwalk must not resolve links on scap's behalf.
-        // With `follow_links(true)` a symlinked directory is reported as a
-        // directory and descended, so `list` printed repositories ghq never
-        // reaches -- W0.4 case 2 and case 14a, where ghq printed nothing and
-        // scap printed `link-to-plain-dir/nested/repo`. Off, every symlink
-        // is reported as a symlink and left unread, and the one link ghq
-        // does emit -- one whose target is itself a repository -- is
-        // recognised by the explicit `metadata` call in `process_read_dir`.
-        .follow_links(false)
-        .parallelism(Parallelism::RayonNewPool(WALK_THREADS))
-        .skip_hidden(false)
-        .sort(false)
-        .process_read_dir(move |depth, dir_path, _, children| {
-            // jwalk calls this once before anything is read, with `depth`
-            // `None`, the walk root's *parent* as the path and the root
-            // itself as the only child. That call is not a directory read
-            // and must not be counted as one, and the root is not a
-            // candidate for exclusion (a pattern is matched against paths
-            // relative to it).
-            if depth.is_none() {
-                return;
-            }
-            walk_dirs_read.fetch_add(1, Ordering::Relaxed);
-
-            // The root-relative path of this directory, with the separator
-            // already appended, so each child costs a truncate and an
-            // extend rather than an allocation.
-            let mut rel = Vec::new();
-            let mut rel_is_root_relative = false;
-            if !patterns.is_empty() {
-                let stripped = dir_path.strip_prefix(&walk_root);
-                debug_assert!(
-                    stripped.is_ok(),
-                    "walk path {} is not under the walk root {}",
-                    dir_path.display(),
-                    walk_root.display()
-                );
-                // jwalk only ever reports paths under the root it was
-                // given. If that ever stopped holding, the exclusion test
-                // is skipped for this directory rather than falling back to
-                // the absolute path: patterns are anchored at the root, and
-                // matching them against `/Users/...` could silently exclude
-                // a subtree because of where the corpus happens to live.
-                if let Ok(prefix) = stripped {
-                    rel.extend_from_slice(prefix.as_os_str().as_encoded_bytes());
-                    if !rel.is_empty() {
-                        rel.push(b'/');
-                    }
-                    rel_is_root_relative = true;
-                }
-            }
-            let dir_len = rel.len();
-
-            for child in children.iter_mut() {
-                let child = match child {
-                    Ok(child) => child,
-                    // ADR-9 rule (v): this entry is skipped, and reported
-                    // from the walk iterator rather than here -- jwalk
-                    // yields every erroring child from there as well, so
-                    // reporting in both arms would print each problem
-                    // twice.
-                    Err(_) => continue,
-                };
-
-                // ADR-9 rule (iii): a symlink is a candidate as well as a
-                // directory. ghq resolves one for `IsDir` and, when the
-                // target is a repository, calls back with the *link's* path
-                // (local_repository.go:268-299); it never walks through one
-                // (walker.go:85-90). Anything else -- a regular file, a
-                // socket -- is neither.
-                let file_type = child.file_type();
-                let is_symlink = file_type.is_symlink();
-                if !file_type.is_dir() && !is_symlink {
-                    continue;
-                }
-
-                // ADR-9 rule (viii): an excluded directory is neither read
-                // nor emitted, and the test runs before the repository
-                // probe so an excluded subtree costs no `stat` either.
-                if rel_is_root_relative {
-                    rel.truncate(dir_len);
-                    rel.extend_from_slice(child.file_name.as_encoded_bytes());
-                    if is_excluded(patterns, &rel) {
-                        child.read_children = None;
-                        walk_excluded.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                }
-
-                let child_path = child.path();
-
-                // ADR-9 rules (iii) and (iv): one following `stat` per
-                // symlink, and only per symlink. A link that resolves to
-                // anything but a directory -- a regular file, a dangling
-                // target, a loop -- is not a candidate. ghq prints nothing
-                // for any of them (W0.4 cases 3, 4, 5 and 7), so the
-                // resolution failure stays at the debug level rather than
-                // putting a line on stderr that the oracle does not have.
-                if is_symlink {
-                    match std::fs::metadata(&child_path) {
-                        Ok(meta) if meta.is_dir() => {}
-                        Ok(_) => continue,
-                        Err(err) => {
-                            tracing::debug!("{}: {err}", child_path.display());
-                            continue;
-                        }
-                    }
-                }
-
-                if is_repo_path(&child_path) {
-                    // Not descended: ghq prunes a repository's own subtree,
-                    // and never descends a symlink at all. jwalk reads
-                    // neither a `read_children = None` directory nor -- with
-                    // `follow_links(false)` -- any symlink.
-                    child.read_children = None;
-                    child.client_state = true;
-                }
-            }
-        });
-
-    for entry in walker {
-        let entry = match entry {
-            Ok(entry) => entry,
-            // ADR-9 rule (v): every child `process_read_dir` could not
-            // build reaches this arm too, so reporting here covers both of
-            // the walker's error paths exactly once. Exit status stays 0.
-            // Only a permission error is warned; see `report_walk_error`.
-            Err(err) => {
-                report_walk_error(&err);
-                continue;
-            }
-        };
-
-        // A directory whose own `read_dir` failed never reaches
-        // `process_read_dir` -- jwalk hangs the error on the entry instead
-        // -- so rule (v)'s permission-denied case is reported from here.
-        if let Some(err) = entry.read_children.as_ref().and_then(ReadChildren::error) {
-            report_walk_error(err);
-        }
-
-        // `client_state` is set only where `process_read_dir` identified a
-        // repository, so it carries the file-type test already. It is not
-        // redundant with one here: under rule (iii) a symlinked repository
-        // is emitted, and its own file type is a symlink, not a directory.
-        if !entry.client_state {
-            continue;
-        }
-
-        let repo_root = normalize_repo_root(entry.path());
-        maybe_push_repo(repo_root, root, out, primary, seen);
-    }
-
-    span.record("dirs_read", dirs_read.load(Ordering::Relaxed));
-    span.record("excluded", excluded.load(Ordering::Relaxed));
-    span.record("repos", out.len() - before);
-    Ok(())
+    let listing = walk::walk_root(root, opts)?;
+    span.record("dirs_read", listing.dirs_read());
+    span.record("excluded", listing.excluded());
+    span.record("repos", listing.len());
+    Ok(listing)
 }
 
-/// ADR-9 rule (viii): whether `rel`, a root-relative path, matches any
-/// configured exclusion.
+/// Appends `<root>/<rel>` to `sink`, the way `Path::join` would have rendered
+/// it.
 ///
-/// Patterns are matched against the whole root-relative path and are
-/// therefore anchored at the root: `foo` excludes `<root>/foo` and not
-/// `<root>/bar/foo`, and a pattern that is to reach further down says so
-/// (`*/foo`, or `**/foo`). `NO_MATCH_SLASH_LITERAL` is git's own
-/// `WM_PATHNAME`, under which `*` and `?` stop at a `/` while `**` crosses
-/// it -- the semantics a `.gitignore` reader already expects.
-///
-/// Matching is case-sensitive, as git's is: `IGNORE_CASE` is deliberately
-/// not set, so a pattern must use the on-disk spelling even on a
-/// case-insensitive filesystem such as the default APFS layout.
-fn is_excluded(patterns: &[String], rel: &[u8]) -> bool {
-    patterns.iter().any(|pattern| {
-        wildmatch(
-            pattern.as_bytes().as_bstr(),
-            rel.as_bstr(),
-            gix_glob::wildmatch::Mode::NO_MATCH_SLASH_LITERAL,
-        )
-    })
-}
-
-/// ADR-9 rule (vi): whether this root is worth handing to the walker.
-///
-/// A root that does not exist is skipped silently -- a `scap.root` naming a
-/// directory the user has not created yet is not an error, and ghq skips it
-/// the same way. A root that exists but cannot be read, and a root whose
-/// `stat` fails for any other reason, are skipped *with* a warning: they
-/// hide repositories that would otherwise be listed, so silence would make
-/// the shorter output look authoritative. (ghq dereferences a nil
-/// `FileInfo` in the third case and panics, so it cannot be the oracle for
-/// it -- registered in ADR-13.)
-fn root_is_walkable(root: &Path) -> bool {
-    match std::fs::metadata(root) {
-        Ok(meta) => {
-            if metadata_is_readable(&meta) {
-                return true;
-            }
-            tracing::warn!("{}: Permission denied", root.display());
-            false
-        }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
-        Err(err) => {
-            warn_unwalkable_root(root, &err);
-            false
-        }
-    }
-}
-
-/// ghq's `local_repository.go:310-318` readability test: any of the three
-/// read bits set.
-#[cfg(unix)]
-fn metadata_is_readable(meta: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    meta.permissions().mode() & 0o444 != 0
-}
-
-#[cfg(not(unix))]
-fn metadata_is_readable(_meta: &std::fs::Metadata) -> bool {
-    true
-}
-
-/// ADR-9 rule (v): report an entry the walk could not read, then carry on.
-///
-/// The walk still exits 0 either way. A `list` that aborted on the first
-/// unreadable directory would be less useful than one that lists what it
-/// can and says what it skipped, which is what ghq does
-/// (`local_repository.go:301-306`).
-///
-/// Only a permission error reaches stderr by default, and it carries ghq's
-/// own wording rather than the OS string so it does not vary by platform.
-/// Everything else is a debug line: ghq prints nothing for those, and a
-/// single dangling symlink anywhere in a corpus -- the maintainer's has one,
-/// a stale documentation link -- would otherwise put a line on every `scap
-/// list`, which teaches users to stop reading its stderr and so costs more
-/// than it reports. Under rule (iii)'s `follow_links(false)` the walk no
-/// longer manufactures that class at all: an unresolvable symlink is
-/// reported from `process_read_dir`'s own `metadata` call, at debug.
-fn report_walk_io_error(path: &Path, err: &io::Error) {
-    // Both EACCES and EPERM map to `PermissionDenied`.
-    if err.kind() == io::ErrorKind::PermissionDenied {
-        tracing::warn!("{}: Permission denied", path.display());
-    } else {
-        tracing::debug!("{}: {err}", path.display());
-    }
-}
-
-fn report_walk_error(err: &jwalk::Error) {
-    match (err.path(), err.io_error()) {
-        (Some(path), Some(io_err)) => report_walk_io_error(path, io_err),
-        // A jwalk error with no `io::Error` behind it -- a depth or
-        // recursion complaint of its own. Symlink loops no longer arrive
-        // here: with `follow_links(false)` the walk never resolves a link,
-        // so a loop surfaces as the ELOOP that rule (iii)'s own `metadata`
-        // call returns, and is logged there. ghq is silent for both.
-        (Some(path), None) => tracing::debug!("{}: {err}", path.display()),
-        (None, _) => tracing::debug!("{err}"),
-    }
-}
-
-/// ADR-9 rule (vi): report a root the walk cannot use.
-///
-/// Unlike rule (v)'s per-entry errors this always warns, because a root
-/// scap cannot walk hides every repository beneath it rather than one
-/// entry, and the listing that results looks complete. ghq warns for the
-/// unreadable root as well; the non-ENOENT case is scap's own, since ghq
-/// panics there (ADR-13).
-fn warn_unwalkable_root(root: &Path, err: &io::Error) {
-    if err.kind() == io::ErrorKind::PermissionDenied {
-        tracing::warn!("{}: Permission denied", root.display());
-    } else {
-        tracing::warn!("{}: {err}", root.display());
-    }
-}
-
-fn maybe_push_repo(
-    full_path: PathBuf,
-    root: &Path,
-    out: &mut Vec<DiscoveredRepo>,
-    primary: Option<&Path>,
-    seen: &mut HashSet<PathBuf>,
-) {
-    if !seen.insert(full_path.clone()) {
+/// Two cases are not a plain concatenation. A root that is itself a
+/// repository carries the relative path `.`, and ghq prints the root for it
+/// rather than `<root>/.`; and a root spelled with a trailing separator —
+/// only `/` survives `clean_path` and `canonicalize` — must not gain a second
+/// one.
+fn push_full_path(sink: &mut Vec<u8>, root: &Path, rel: &[u8]) {
+    let root = root.as_os_str().as_encoded_bytes();
+    sink.extend_from_slice(root);
+    if rel == b"." {
         return;
     }
+    if !root.ends_with(b"/") {
+        sink.push(b'/');
+    }
+    sink.extend_from_slice(rel);
+}
 
-    if let Some(rel_parts) = rel_parts(root, &full_path) {
-        let is_under_primary = primary.map(|p| full_path.starts_with(p)).unwrap_or(false);
-        let rel_path = rel_parts.join("/");
-        out.push(DiscoveredRepo { full_path, rel_path, rel_parts, is_under_primary });
+/// Whether the repository at `rel` under `root` also lies under `primary`.
+///
+/// Reproduces `Path::starts_with`, which compares whole components: under a
+/// primary root `/a/b`, the path `/a/bc/x` is not a match even though its
+/// bytes begin with the same nine. Both paths come from
+/// `config::resolve_roots`, so both are absolute and already cleaned, and a
+/// component-boundary test on the bytes is the same predicate.
+fn under_primary(primary: Option<&Path>, root: &Path, rel: &[u8]) -> bool {
+    let Some(primary) = primary else {
+        return false;
+    };
+    let primary = primary.as_os_str().as_encoded_bytes();
+    let mut full = Vec::with_capacity(root.as_os_str().len() + rel.len() + 1);
+    push_full_path(&mut full, root, rel);
+    full == primary
+        || (full.len() > primary.len()
+            && full.starts_with(primary)
+            && (full[primary.len()] == b'/' || primary.ends_with(b"/")))
+}
+
+/// Every tail of `rel` that starts on a component boundary, shortest first.
+///
+/// ghq `local_repository.go:Subpaths`. The tails are sub-slices rather than
+/// joins because `rel` is already the components joined with `/`, so the
+/// `i`th tail *is* a suffix of it — which is what lets `--unique` count
+/// sub-paths in a `HashMap<&[u8], usize>` with no allocation at all.
+fn subpaths(rel: &[u8]) -> impl Iterator<Item = &[u8]> {
+    memrchr_iter(b'/', rel).map(move |i| &rel[i + 1..]).chain(std::iter::once(rel))
+}
+
+/// ghq `local_repository.go:NonHostPath` — the path without its leading host
+/// component, and empty when there is no other component.
+fn non_host_path(rel: &[u8]) -> &[u8] {
+    match memchr(b'/', rel) {
+        Some(i) => &rel[i + 1..],
+        None => b"",
     }
 }
 
-/// ADR-9 rule (ii): a directory whose *own name* ends in `.git` is a
-/// repository without being opened, and rule (iii) applies that test to a
-/// symlink's name rather than its target's -- so `link -> upstream.git` is
-/// not a repository, while `link.git -> upstream.git` is (W0.4 case 7).
-fn is_repo_path(path: &Path) -> bool {
-    if path.file_name().and_then(|n| n.to_str()).is_some_and(|name| name.ends_with(".git")) {
-        return true;
+/// The leading component of `rel`, which is the host segment of the layout.
+fn host_component(rel: &[u8]) -> &[u8] {
+    match memchr(b'/', rel) {
+        Some(i) => &rel[..i],
+        None => rel,
     }
-
-    path.join(".git").exists()
 }
 
-fn normalize_repo_root(path: PathBuf) -> PathBuf {
-    if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
-        return path.parent().map_or_else(|| path.clone(), |p| p.to_path_buf());
-    }
-
-    path
-}
-
-fn rel_parts(root: &Path, full: &Path) -> Option<Vec<String>> {
-    let rel = full.strip_prefix(root).ok()?;
-    let parts: Vec<String> = rel
-        .components()
-        .filter_map(|c| c.as_os_str().to_str().map(|s| s.to_owned()))
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.is_empty() { Some(vec![".".to_owned()]) } else { Some(parts) }
-}
-
-fn filter_repos(repos: Vec<DiscoveredRepo>, args: &ListArgs) -> Vec<DiscoveredRepo> {
+fn filter_repos<'a>(repos: Vec<Repo<'a>>, args: &ListArgs) -> Vec<Repo<'a>> {
     let Some(query) = args.query.as_deref() else {
         return repos;
     };
 
     if args.exact {
-        repos.into_iter().filter(|r| r.matches_exact(query)).collect()
-    } else {
-        let (host_filter, q) = split_authority_prefix(query);
-        let lower = q.to_lowercase();
-        let smart_case = q == lower;
-        repos
-            .into_iter()
-            .filter(|r| {
-                if let Some(host) = host_filter
-                    && r.rel_parts.first().map(String::as_str) != Some(host)
-                {
-                    return false;
-                }
-
-                let hay = r.non_host_path();
-                if smart_case { hay.to_lowercase().contains(&lower) } else { hay.contains(&q) }
-            })
-            .collect()
+        let needle = query.as_bytes();
+        return repos.into_iter().filter(|r| subpaths(r.rel).any(|p| p == needle)).collect();
     }
+
+    let (host_filter, q) = split_authority_prefix(query);
+    let host_filter = host_filter.map(str::as_bytes);
+    let lower = q.to_lowercase();
+    // ghq's smart case: an all-lowercase query matches case-insensitively,
+    // a query carrying any uppercase matches literally.
+    let smart_case = q == lower;
+    let finder = memmem::Finder::new(if smart_case { lower.as_bytes() } else { q.as_bytes() });
+    // One lowercased copy of the haystack at a time, in a buffer reused for
+    // every repository.
+    let mut folded = Vec::new();
+
+    repos
+        .into_iter()
+        .filter(|r| {
+            if let Some(host) = host_filter
+                && host_component(r.rel) != host
+            {
+                return false;
+            }
+
+            let hay = non_host_path(r.rel);
+            if !smart_case {
+                return finder.find(hay).is_some();
+            }
+            finder.find(lowercase(&mut folded, hay)).is_some()
+        })
+        .collect()
+}
+
+/// Lowercases `hay` into `sink` and hands the result back.
+///
+/// The ASCII path is the one every real repository layout takes and it costs
+/// one pass with no allocation. Anything else goes through
+/// [`str::to_lowercase`], which is what the previous `String`-based filter
+/// called and so is the only spelling that keeps the exotic cases — the
+/// Kelvin sign folding to `k`, a final sigma, a character whose lowercase is
+/// longer than itself — matching byte for byte. A name that is not UTF-8 at
+/// all cannot reach `to_lowercase`; it is folded as ASCII, which is more than
+/// the previous walker managed (it dropped undecodable components outright).
+fn lowercase<'a>(sink: &'a mut Vec<u8>, hay: &[u8]) -> &'a [u8] {
+    sink.clear();
+    match std::str::from_utf8(hay) {
+        Ok(s) if !s.is_ascii() => sink.extend_from_slice(s.to_lowercase().as_bytes()),
+        _ => {
+            sink.extend_from_slice(hay);
+            sink.make_ascii_lowercase();
+        }
+    }
+    sink
 }
 
 // ghq cmd_list.go: looksLikeAuthorityPattern detection for "host/<rest>" queries.
@@ -534,32 +341,54 @@ fn looks_like_authority(s: &str) -> bool {
 }
 
 // ghq cmd_list.go: --unique de-dup logic.
-fn format_unique(repos: &[DiscoveredRepo]) -> Vec<String> {
-    let mut subpath_count: HashMap<String, usize> = HashMap::new();
-    let mut repos_count: HashMap<String, usize> = HashMap::new();
+fn format_unique<'a>(repos: &[Repo<'a>]) -> Vec<&'a [u8]> {
+    let mut subpath_count: HashMap<&[u8], usize> = HashMap::new();
+    let mut repos_count: HashMap<&[u8], usize> = HashMap::new();
 
     for r in repos {
-        let rel = r.rel_path();
-        if *repos_count.get(&rel).unwrap_or(&0) == 0 {
-            for p in r.subpaths() {
+        if repos_count.get(r.rel).copied().unwrap_or(0) == 0 {
+            for p in subpaths(r.rel) {
                 *subpath_count.entry(p).or_insert(0) += 1;
             }
         }
-        *repos_count.entry(rel).or_insert(0) += 1;
+        *repos_count.entry(r.rel).or_insert(0) += 1;
     }
 
     let mut out = Vec::with_capacity(repos.len());
     for r in repos {
-        let rel = r.rel_path();
-        if *repos_count.get(&rel).unwrap_or(&0) > 1 && !r.is_under_primary {
+        if repos_count.get(r.rel).copied().unwrap_or(0) > 1 && !r.under_primary {
             continue;
         }
-        for p in r.subpaths() {
-            if *subpath_count.get(&p).unwrap_or(&0) == 1 {
+        for p in subpaths(r.rel) {
+            if subpath_count.get(p).copied() == Some(1) {
                 out.push(p);
                 break;
             }
         }
     }
     out
+}
+
+/// Writes the whole listing to fd 1 in one call.
+///
+/// One `write_all` rather than a line-at-a-time `BufWriter`: the listing is
+/// already one contiguous buffer, so buffering it again would only copy it a
+/// second time.
+///
+/// A closed pipe is not an error. `scap list | head -1` is the ordinary way
+/// to use the command, and whether the previous writer even noticed depended
+/// on the size of the listing against the kernel's pipe buffer: a listing the
+/// buffer accepted whole was written before `head` exited and raised no error
+/// at all, while a larger one failed part-way and left the command exiting 1.
+/// Measured on this machine, a 44 KB listing exited 0 and a 94 KB one exited
+/// 1 — the status depended on how many repositories the machine happened to
+/// hold. It is 0 in both cases now.
+fn write_stdout(buf: &[u8]) -> anyhow::Result<()> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    match out.write_all(buf).and_then(|()| out.flush()) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(err) => Err(err.into()),
+    }
 }

@@ -26,6 +26,12 @@ fn isolated(cmd: &mut Command, home: &Path, root: &Path) {
         .env_remove("GIT_DIR")
         .env_remove("GIT_CEILING_DIRECTORIES")
         .env_remove("SCAP_LIST_EXCLUDE")
+        // The two walker knobs. `SCAP_LIST_DETECT` selects the `.git`
+        // detection strategy and `SCAP_LIST_THREADS` the worker count;
+        // neither changes what is printed, but an ambient value would make
+        // the counter assertions below read a tree the test did not choose.
+        .env_remove("SCAP_LIST_DETECT")
+        .env_remove("SCAP_LIST_THREADS")
         .env_remove("SCAP_LOG")
         .env_remove("RUST_LOG")
         // Repository discovery reads the configuration of whatever
@@ -606,36 +612,43 @@ fn list_exclude_records_dirs_read_and_excluded_on_the_walk_span() {
     let root = TempDir::new().unwrap();
     exclusion_fixture(root.path());
 
-    let mut baseline = Command::cargo_bin("scap").unwrap();
-    isolated(&mut baseline, home.path(), root.path());
-    let baseline = baseline.env("SCAP_LOG", "debug").arg("list").assert().success();
-    let baseline = String::from_utf8_lossy(&baseline.get_output().stderr).into_owned();
+    let stderr_of = |detect: &str, exclude: Option<&str>| {
+        let mut cmd = Command::cargo_bin("scap").unwrap();
+        isolated(&mut cmd, home.path(), root.path());
+        cmd.env("SCAP_LOG", "debug").env("SCAP_LIST_DETECT", detect);
+        if let Some(pattern) = exclude {
+            cmd.env("SCAP_LIST_EXCLUDE", pattern);
+        }
+        let out = cmd.arg("list").assert().success();
+        String::from_utf8_lossy(&out.get_output().stderr).into_owned()
+    };
 
-    let mut excluded = Command::cargo_bin("scap").unwrap();
-    isolated(&mut excluded, home.path(), root.path());
-    let excluded = excluded
-        .env("SCAP_LOG", "debug")
-        .env("SCAP_LIST_EXCLUDE", "github.com/zchee/big.bak")
-        .arg("list")
-        .assert()
-        .success();
-    let excluded = String::from_utf8_lossy(&excluded.get_output().stderr).into_owned();
-
-    let baseline_dirs = span_field(&baseline, "dirs_read")
-        .unwrap_or_else(|| panic!("no dirs_read on the close line: {baseline}"));
-    let excluded_dirs = span_field(&excluded, "dirs_read")
-        .unwrap_or_else(|| panic!("no dirs_read on the close line: {excluded}"));
-
-    assert_eq!(span_field(&baseline, "excluded"), Some(0), "stderr: {baseline}");
-    assert_eq!(span_field(&excluded, "excluded"), Some(1), "stderr: {excluded}");
     // `big.bak`, `big.bak/deep` and `big.bak/deep/deeper` are read in the
-    // baseline and not in the excluded run; `big.bak/inner` is a repository
-    // and is pruned either way.
-    assert_eq!(
-        excluded_dirs + 3,
-        baseline_dirs,
-        "excluded run read {excluded_dirs} directories, baseline {baseline_dirs}"
-    );
+    // baseline and not in the excluded run under either strategy. The fourth
+    // directory is the repository `big.bak/inner`: open-and-scan opens it and
+    // looks for `.git` among the entries it read, while stat-first asks for
+    // `<dir>/.git` directly and never opens it. That difference is the whole
+    // cost W3.0b is choosing between, and it is why `dirs_read` compares
+    // within a strategy and not across them. The repositories found are the
+    // same either way, which the stdout assertions around this test pin.
+    for (detect, saved) in [("open", 4), ("stat", 3)] {
+        let baseline = stderr_of(detect, None);
+        let excluded = stderr_of(detect, Some("github.com/zchee/big.bak"));
+
+        let baseline_dirs = span_field(&baseline, "dirs_read")
+            .unwrap_or_else(|| panic!("no dirs_read on the close line: {baseline}"));
+        let excluded_dirs = span_field(&excluded, "dirs_read")
+            .unwrap_or_else(|| panic!("no dirs_read on the close line: {excluded}"));
+
+        assert_eq!(span_field(&baseline, "excluded"), Some(0), "stderr: {baseline}");
+        assert_eq!(span_field(&excluded, "excluded"), Some(1), "stderr: {excluded}");
+        assert_eq!(
+            excluded_dirs + saved,
+            baseline_dirs,
+            "detect={detect}: excluded run read {excluded_dirs} directories, \
+             baseline {baseline_dirs}"
+        );
+    }
 }
 
 #[test]

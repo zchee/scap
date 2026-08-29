@@ -14,14 +14,13 @@ readme = "README.md"
 [workspace]
 
 [dependencies]
-jwalk = "0.9"
 anyhow = { version = "1", default-features = false }
 bstr = { version = "1", default-features = false }
 clap = { version = "4", features = ["derive"] }
-# ADR-9's walker pool. Already in the tree through jwalk's rayon, and named
-# here because src/walk/pool.rs uses it directly: per-thread deques with
-# oldest-end stealing are the scheduler `b2-rustix` was measured on. It
-# outlives jwalk's removal in W3.3.
+# ADR-9's walker pool: src/walk/pool.rs builds per-thread deques with
+# oldest-end stealing, the scheduler `b2-rustix` was measured on. It reached
+# the tree through jwalk's rayon and is the one piece of that subtree kept
+# once jwalk itself was removed.
 crossbeam-deque = "0.8"
 # `sha1` is not optional in practice: gix-hash refuses to build unless one of
 # `sha1`/`sha256` is selected, and both crates forward the flag to gix-ref.
@@ -29,9 +28,14 @@ gix-config = { version = "0.60", features = ["sha1"] }
 gix-discover = { version = "0.55", features = ["sha1"] }
 # ADR-9 rule (viii): `scap.listExclude` patterns are matched with git's own
 # wildmatch. Already in the tree through gix-config; named here because
-# src/cmd/list.rs calls it directly.
+# src/walk/mod.rs calls it directly.
 gix-glob = "0.27"
 gix-url = "0.37"
+# ADR-9's post-processing passes. `memmem` is the substring search behind the
+# `list` query filter and `memchr`/`memrchr_iter` split root-relative paths on
+# `/` without decoding them, which is what keeps the filter, `--unique` and
+# `-e` on the walk's own bytes.
+memchr = "2"
 # Two safe wrappers, one crate. `process` is Decision D-1's stale-tmp
 # liveness probe, `kill(pid, 0)` instead of a `kill -0` subprocess. `fs` is
 # ADR-9's B2 reader (`openat`, `Dir`, `statat`): the W3.0 gate adopted the

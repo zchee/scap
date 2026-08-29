@@ -82,7 +82,16 @@ pub struct RmArgs {
     #[arg(long)]
     pub bare: bool,
 
-    /// Repository spec: <project>, <user>/<project>, <host>/<user>/<project>, or full URL.
+    // The help text is spelled out rather than taken from the doc comment
+    // because the placeholder form users need -- angle brackets -- is HTML to
+    // rustdoc, which reports every one as an unclosed tag. clap prefers an
+    // explicit `help`, so the two can differ without the printed help moving.
+    // The doc comment stays ONE paragraph: a second becomes clap's
+    // `long_help` and switches the whole subcommand to the long layout.
+    /// Repository spec: a project name, optionally owner- and host-qualified, or a full URL.
+    #[arg(
+        help = "Repository spec: <project>, <user>/<project>, <host>/<user>/<project>, or full URL"
+    )]
     pub target: String,
 }
 
@@ -104,7 +113,16 @@ pub struct CreateArgs {
     #[arg(long)]
     pub bare: bool,
 
-    /// Repository spec: <project>, <user>/<project>, <host>/<user>/<project>, or full URL.
+    // The help text is spelled out rather than taken from the doc comment
+    // because the placeholder form users need -- angle brackets -- is HTML to
+    // rustdoc, which reports every one as an unclosed tag. clap prefers an
+    // explicit `help`, so the two can differ without the printed help moving.
+    // The doc comment stays ONE paragraph: a second becomes clap's
+    // `long_help` and switches the whole subcommand to the long layout.
+    /// Repository spec: a project name, optionally owner- and host-qualified, or a full URL.
+    #[arg(
+        help = "Repository spec: <project>, <user>/<project>, <host>/<user>/<project>, or full URL"
+    )]
     pub target: String,
 }
 
