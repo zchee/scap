@@ -11,11 +11,16 @@ boundary legs, and a verdict per leg that is either **MET** or
 selects no admissible `N`. Every other criterion is MET.** No plan ruling is
 written here; the ruling is the plan owner's.
 
-The finding that decides how to read all of it is in
-[Same-window reference](#same-window-reference-the-drift-question-answered):
-a stable ABAB bracket shows the machine is about 6 % slower today than when
-the bounds were frozen, **and** that this does not rescue the wall criterion,
-because the ratio form against a live reference fails too.
+Two bracketed reference groups decide how to read that. Against the
+**pre-Phase-3 walker** the wall criterion fails in ratio form as well as in
+absolute form — HEAD is between parity and about 4 % slower, nowhere near the
+0.90 asked. Against the **W0.2 spike**, whose frozen 121.79 ms is what AC-3c's
+bound is 1.15 × of, HEAD is **faster** (ratio 0.9368) and does **7 % less**
+kernel work, so in spike-ratio form AC-3c is met. Both are true because the
+spike can no longer reproduce its own frozen figure. The machine has moved —
+measured at **+4.1 % in wall time over three hours with the program held
+constant, and only +0.7 % in system time** — so drift here is a wall-clock
+effect rather than a change in kernel work.
 
 ## Environment
 
@@ -26,9 +31,9 @@ because the ratio form against a live reference fails too.
 | Toolchain | rustc 1.100.0-nightly (e457a7b0d 2026-08-27) |
 | hyperfine | 1.20.0 |
 | Oracle | ghq 1.8.0 |
-| `RUSTFLAGS` | equal to `FROZEN_RUSTFLAGS`; `rustflags_match: true` in all seven groups |
-| Forced | `forced: false` in all seven groups |
-| Window | 2026-08-29, 15:22Z – 16:13Z |
+| `RUSTFLAGS` | equal to `FROZEN_RUSTFLAGS`; `rustflags_match: true` in all nine groups |
+| Forced | `forced: false` in all nine groups |
+| Window | 2026-08-29, 15:22Z – 16:26Z |
 
 ## The program measured
 
@@ -75,12 +80,12 @@ restore rewrote older run directories onto disk mid-window once already.
 `OUT/CONTAMINATED` naming the process and exits 3, labelling the partial
 directory rather than deleting the evidence.
 
-Zero foreign hyperfine were seen: **49 scans across the seven groups, all
+Zero foreign hyperfine were seen: **63 scans across the nine groups, all
 clean.**
 
 ## Window discipline
 
-Seven groups admitted. **24 gate refusals** and **11 groups discarded**, every
+Nine groups admitted. **24 gate refusals** and **12 groups discarded**, every
 discard for a *closing*-gate failure.
 
 The harness gates the **start** of a group and only **records** the close. The
@@ -106,10 +111,12 @@ medians read 139.6–142.8, consistent with the admitted windows.
 | a′ | `20260829T160447Z-p3regate-aprime` | 0 | 90.79 → 91.50 | 10.0 → 10.6 |
 | AC-6/AC-1 | `20260829T160512Z-p3regate-ac6ac1` | 0 | 88.86 → 85.96 | 8.7 → 9.7 |
 | reference | `20260829T161206Z-p3regate-ref` | 1 | 86.50 → 85.81 | 10.0 → 9.8 |
+| spike a+b | `20260829T162225Z-p3regate-spike` | 0 | 88.93 → 85.82 | 11.3 → 11.3 |
+| spike a | `20260829T162533Z-p3regate-spikea` | 0 | 90.83 → 86.53 | 10.6 → 10.5 |
 
-Discarded: three W2 attempts (`153206Z`, `153324Z`, `153422Z`) and eight W3
+Discarded: three W2 attempts (`153206Z`, `153324Z`, `153422Z`), eight W3
 attempts (`154220Z`, `154320Z`, `154458Z`, `154557Z`, `155127Z`, `155229Z`,
-`155532Z`, `155710Z`).
+`155532Z`, `155710Z`) and one spike attempt (`162119Z`).
 
 ## The ensemble rule
 
@@ -250,6 +257,102 @@ three available AC-6-lane binaries predates Phase 1 — the plan names them as
 W1.2 (`78b3212`), W1.3 (`21eb825`) and W1.4 (`6ab9038`). The row is published
 as the closest available stand-in and nothing more.
 
+## The W0.2 spike beside HEAD
+
+Ledger #21e-spike. `20260829T162225Z-p3regate-spike` and
+`20260829T162533Z-p3regate-spikea`.
+
+**This is a diagnostic against a frozen Phase-0 figure, not a re-derivation of
+any Phase-0 verdict.** Two 30-run groups cannot restate a matrix of 144 rows,
+and nothing here reopens the B2 adoption or `N*`.
+
+AC-3c's 140.06 ms bound is 1.15 × the W0.2 spike's frozen **121.79 ms**
+(`b2-rustix`, N=4, a+b, user 34.04, sys 430.84). HEAD reads 495–532 ms of
+system time on that corpus today. The question is whether HEAD does about 15 %
+more kernel work than the spike with the same reader semantics — a real
+lever — or whether the frozen figure is simply stale.
+
+The spike binary is `.omc/spikes/w02-walker/target/release/spikewalk`, sha256
+`73f31c1253fede1e…`. It was **not rebuilt for this group**: `#22` built it
+during Phase 0b with `RUSTFLAGS` asserted equal to `FROZEN_RUSTFLAGS`,
+recorded that sha, and re-verified it after its last row; the binary on disk
+still carries it. Invoked exactly as the W0.2 driver does — `--variant
+b2-rustix --threads 4` with both roots positional and `SPIKEWALK_FD_CAP`
+unset. Before timing, the spike and HEAD were confirmed to emit **byte-identical
+output** on a+b: 1,826 lines, same order, hash `3a080dfa`. No normalisation was
+needed; they do the same work.
+
+### a+b, ABAB, 30 runs each
+
+| Row | Binary | Median | IQR | User | Sys |
+| --- | --- | --- | --- | --- | --- |
+| `spk_head_1` | HEAD `86dd2835` | 144.131 | 140.976–148.150 | 39.163 | 497.143 |
+| `spk_spike_1` | spike `73f31c12` | 151.078 | 150.280–155.489 | 40.914 | 529.988 |
+| `spk_head_2` | HEAD `86dd2835` | 142.922 | 140.244–146.652 | 39.082 | 494.278 |
+| `spk_spike_2` | spike `73f31c12` | 154.239 | 152.886–158.435 | 41.697 | 539.718 |
+
+**HEAD is faster than the spike today, and does less kernel work.**
+
+| | HEAD | spike | ratio |
+| --- | --- | --- | --- |
+| wall | 143.372 | 153.040 | **0.9368** (AC-3c asks ≤ 1.15) |
+| user | 39.122 | 41.305 | 0.9472 |
+| sys | 495.710 | 534.853 | **0.9268**, i.e. **−39.14 ms** |
+
+Bootstrap CI on 60 versus 60 runs, median(HEAD) − median(spike):
+**[−12.011, −7.600] ms**, excluding zero. **The premise that HEAD does ~15 %
+more kernel work than the spike is refuted: it does about 7 % less.** In
+spike-ratio form AC-3c is met with room to spare.
+
+### The spike cannot reproduce its own frozen figure
+
+| | Today | Frozen (2026-08-28) | Ratio |
+| --- | --- | --- | --- |
+| wall | 153.040 | 121.79 | **1.2566** (+25.7 %) |
+| user | 41.305 | 34.04 | 1.2134 (+21.3 %) |
+| sys | 534.853 | 430.84 | 1.2414 (+24.1 %) |
+
+That +25.7 % is larger than host drift alone accounts for, and there is a
+second cause that must be named rather than absorbed: **the frozen a+b figure
+was measured on 2026-08-28 with the ORIGINAL spike build, while the binary on
+disk is `#22`'s rebuild**, and `#22` recorded that the 2026-08-28 artifacts did
+not reproduce byte-for-byte. The a+b comparison therefore mixes host movement
+with a possible rebuild difference and cannot be read as pure drift.
+
+### Corpus a, with the program held constant
+
+`#22` measured **this exact binary** on corpus a at ~13:30Z. Re-reading it at
+16:25Z isolates host movement with the program fixed:
+
+| | 13:30Z (`#22`) | 16:25Z | Ratio |
+| --- | --- | --- | --- |
+| wall | 117.398 | 122.262 | 1.0414 (**+4.1 %**) |
+| user | 33.116 | 33.840 | 1.0219 |
+| sys | 430.239 | 433.106 | 1.0067 (**+0.7 %**) |
+
+**The host moved 4.1 % in wall time over three hours while system time barely
+moved at all (+0.7 %).** Drift on this machine is a wall-clock effect, not a
+change in how much kernel work the same program does. On corpus a in that same
+group HEAD reads 122.721 against the spike's 122.262 — **parity, 1.0038** — so
+HEAD is not systematically slower than the spike on either corpus today.
+
+### System-time stability, both brackets
+
+The lead's observation that the reference held steady while HEAD moved is
+confirmed for that group and **does not generalise**:
+
+| Group | Binary | sys first → second | Δ |
+| --- | --- | --- | --- |
+| reference | jwalk `0b48c24a` | 522.058 → 524.535 | +2.477 |
+| reference | HEAD `86dd2835` | 505.998 → 532.109 | **+26.112** |
+| spike | spike `73f31c12` | 529.988 → 539.718 | +9.730 |
+| spike | HEAD `86dd2835` | 497.143 → 494.278 | **−2.865** |
+
+HEAD's system time swung 26 ms in the reference group and held to 3 ms in the
+spike group, where the spike was the less steady of the pair. Whichever binary
+looks unstable depends on the window, not on the binary — which is the case for
+reading these legs as an ensemble rather than from any single group.
+
 ## Corpus a′, AC-9, AC-6, AC-1
 
 `20260829T160447Z-p3regate-aprime` and `20260829T160512Z-p3regate-ac6ac1`.
@@ -326,7 +429,8 @@ re-verified as `86dd2835` afterwards.
 `20260829T152228Z-p3regate-w1`, `20260829T153917Z-p3regate-w2`,
 `20260829T160202Z-p3regate-w3`, `20260829T160338Z-p3regate-sweep`,
 `20260829T160447Z-p3regate-aprime`, `20260829T160512Z-p3regate-ac6ac1`,
-`20260829T161206Z-p3regate-ref`.
+`20260829T161206Z-p3regate-ref`, `20260829T162225Z-p3regate-spike`,
+`20260829T162533Z-p3regate-spikea`.
 
 Row definitions: `docs/benchmarks/extra-rows-phase-3.sh` (ensemble and sweep),
 `docs/benchmarks/extra-rows-w2b1.sh` (a′),

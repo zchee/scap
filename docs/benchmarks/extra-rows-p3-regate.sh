@@ -55,3 +55,48 @@ row_ref_head_2() { row_ref_list_ab_at ref_head_2 "$SCAP_BIN"; }
 row_ref_w2b1_1() { row_ref_list_ab_at ref_w2b1_1 "$REF_W2B1"; }
 row_ref_w2b1_2() { row_ref_list_ab_at ref_w2b1_2 "$REF_W2B1"; }
 row_ref_w12() { row_ref_list_ab_at ref_w12 "$REF_W12"; }
+
+# --- W0.2 spike beside HEAD (ledger #21e-spike) ----------------------------
+#
+# AC-3c's 140.06 ms bound is 1.15x the W0.2 spike's frozen 121.79 ms
+# (`b2-rustix` at N=4 on a+b, docs/benchmarks/2026-08-28-baseline.md). HEAD
+# reads 500-532 ms of system time on that corpus today against the spike's
+# frozen 430.84, and a frozen figure cannot say whether that gap is the
+# program or the machine. These rows read the spike in the SAME window as
+# HEAD so the two are comparable.
+#
+# The spike lives under `.omc/`, which is git-ignored, so its binary is pinned
+# by sha256 in the re-gate document rather than committed. `SPIKEWALK_FD_CAP`
+# is unset on the command exactly as the W0.2 driver does, so the row measures
+# the configuration the frozen figure came from; the spike takes its roots as
+# positional arguments and does not read SCAP_ROOT.
+#
+# This is a DIAGNOSTIC against a frozen Phase-0 figure, not a re-derivation of
+# any Phase-0 verdict: one group of 30-run rows cannot restate a matrix of 144.
+SPIKE_BIN="${SCAP_REGATE_SPIKE:-$REPO_ROOT/.omc/spikes/w02-walker/target/release/spikewalk}"
+
+row_spike_at() {
+    local name="$1"
+    run_bench "$name" "$ENV_BIN" -u SPIKEWALK_FD_CAP "$SPIKE_BIN" \
+        --variant b2-rustix --threads 4 "$ROOT_A" "$ROOT_B"
+}
+
+row_spk_head_1() { row_ref_list_ab_at spk_head_1 "$SCAP_BIN"; }
+row_spk_head_2() { row_ref_list_ab_at spk_head_2 "$SCAP_BIN"; }
+row_spk_spike_1() { row_spike_at spk_spike_1; }
+row_spk_spike_2() { row_spike_at spk_spike_2; }
+
+# The a+b figure the 1.15x bound rests on was measured on 2026-08-28 with the
+# ORIGINAL spike build; the binary on disk today is #22's rebuild
+# (`73f31c12...`), and #22 recorded that the 2026-08-28 artifacts did not
+# reproduce byte-for-byte. So "spike today vs its frozen a+b figure" mixes host
+# drift with a possible rebuild difference. This row separates them: #22
+# measured THIS binary on corpus a at 117.398 ms, and re-reading the same
+# binary on the same corpus isolates how far the host has moved since, with
+# the program held constant.
+row_spk_spike_a() {
+    run_bench spk_spike_a "$ENV_BIN" -u SPIKEWALK_FD_CAP "$SPIKE_BIN" \
+        --variant b2-rustix --threads 4 "$ROOT_A"
+}
+
+row_spk_head_a() { run_bench spk_head_a "$ENV_BIN" "SCAP_ROOT=$ROOT_A" "$SCAP_BIN" list; }
