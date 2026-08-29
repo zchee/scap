@@ -1,0 +1,78 @@
+{
+  "git_head": "29477f62f182f60763b3a0a2a86a7145025b98c5",
+  "rustc": "rustc 1.100.0-nightly (e457a7b0d 2026-08-27)",
+  "hyperfine": "hyperfine 1.20.0",
+  "load_avg": {
+    "start": "{ 2.47 3.36 4.29 }",
+    "end": "{ 2.84 3.38 4.27 }"
+  },
+  "xprotectd_cpu_pct": {
+    "start": 0.00,
+    "end": 0.00
+  },
+  "cpu_idle_pct": {
+    "start": 89.69,
+    "end": 89.87
+  },
+  "top_proc_cpu_pct": {
+    "start": 11.4,
+    "end": 10.8
+  },
+  "gate": {
+    "deviation": "D-1: contention measured directly; load average recorded, not gated",
+    "idle_min_pct": 85.0,
+    "top_proc_max_pct": 15.0
+  },
+  "os": {
+    "name": "macOS",
+    "version": "27.0",
+    "build": "26A5421a"
+  },
+  "cpu_brand": "Apple M3 Max",
+  "rustflags": "-C target-cpu=apple-m3 -C target-feature=+neon -C opt-level=3 -C codegen-units=1 -C force-frame-pointers=on -C embed-bitcode=yes -Z dylib-lto -Z mir-opt-level=4 -Z inline-mir=yes -C llvm-args=-unroll-threshold=500 -C llvm-args=-enable-dfa-jump-thread -C link-arg=-Wl,-dead_strip",
+  "rustflags_frozen": "-C target-cpu=apple-m3 -C target-feature=+neon -C opt-level=3 -C codegen-units=1 -C force-frame-pointers=on -C embed-bitcode=yes -Z dylib-lto -Z mir-opt-level=4 -Z inline-mir=yes -C llvm-args=-unroll-threshold=500 -C llvm-args=-enable-dfa-jump-thread -C link-arg=-Wl,-dead_strip",
+  "rustflags_match": true,
+  "allow_flags": false,
+  "binary": "/Users/zchee/rust/src/github.com/zchee/scap/target/release/scap",
+  "binary_size_bytes": 1851856,
+  "binary_sha256": "bc5bc21c016c62b30a35cba824f6ca8efd65a0afc35b6537c43ec46e6b0d689e",
+  "runs": 30,
+  "warmup": 5,
+  "forced": false,
+  "corpus_inventory": [
+    {
+      "corpus": "a",
+      "root": "/Users/zchee/src",
+      "exclude": null,
+      "measured": {
+        "repos": 845,
+        "dirs_read": 16933,
+        "excluded": 0
+      },
+      "frozen_2026_08_28": {
+        "dirs_read": 17771,
+        "repos": 841,
+        "source": "W0.2 spike counters (ledger #2)"
+      },
+      "repos_drift": 4,
+      "note": "dirs_read is not comparable with the frozen figure across walkers; repos_drift is the drift signal"
+    },
+    {
+      "corpus": "a'",
+      "root": "/Users/zchee/src",
+      "exclude": "github.com/zchee/claude-code.bak",
+      "measured": {
+        "repos": 845,
+        "dirs_read": 1198,
+        "excluded": 1
+      },
+      "frozen_2026_08_28": {
+        "dirs_read": 2036,
+        "repos": 841,
+        "source": "W0.2 spike counters (ledger #2)"
+      },
+      "repos_drift": 4,
+      "note": "dirs_read is not comparable with the frozen figure across walkers; repos_drift is the drift signal"
+    }
+  ]
+}
