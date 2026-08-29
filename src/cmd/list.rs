@@ -392,3 +392,7 @@ fn write_stdout(buf: &[u8]) -> anyhow::Result<()> {
         Err(err) => Err(err.into()),
     }
 }
+
+#[cfg(test)]
+#[path = "list_tests.rs"]
+mod tests;

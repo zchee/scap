@@ -1140,3 +1140,162 @@ fn list_prints_a_duplicated_relative_path_once_per_root() {
     // `--unique` keeps the shortest unambiguous subpath, once.
     assert_eq!(run(&["list", "--unique"]), "dup\nonly\n");
 }
+
+// -- AC-4: the printed bytes do not depend on the worker count -------------
+
+/// Every entry shape the walk has to decide about, in one tree, so the
+/// thread-identity check exercises the classifier rather than a flat list of
+/// directories: nested repositories, a bare `*.git`, a repository reached
+/// through a symlink, a symlink to an ordinary directory, a dangling
+/// symlink, a repository holding another repository (rule i's prune), and a
+/// non-repository fan-out wide enough to give the pool something to steal.
+#[cfg(unix)]
+fn thread_identity_fixture(root: &Path) {
+    init_repo(root, "github.com/a/one", false);
+    init_repo(root, "github.com/a/two", false);
+    init_repo(root, "github.com/b/deep/nested", false);
+    init_repo(root, "github.com/b/mirror.git", true);
+    init_repo(root, "github.com/c/outer", false);
+    init_repo(root, "github.com/c/outer/alpha", false);
+
+    symlink(root.join("github.com/a/one"), root.join("link-to-repo")).unwrap();
+    symlink(root.join("github.com/b"), root.join("link-to-plain-dir")).unwrap();
+    symlink(root.join("nowhere"), root.join("dangling")).unwrap();
+
+    for i in 0..64 {
+        fs::create_dir_all(root.join(format!("filler/{i}/a/b/c"))).unwrap();
+    }
+}
+
+/// AC-4. `SCAP_LIST_THREADS` changes how the walk is scheduled and nothing
+/// else, so stdout is identical at every thread count — under both `.git`
+/// detection strategies, since those are a cost decision and not a semantic
+/// one.
+///
+/// Comparing the repository *set* would not be enough. The listing is sorted
+/// once over every root, so an ordering that depended on scheduling would
+/// hold the same set while printing different bytes, which is exactly the
+/// failure a byte comparison catches and a set comparison does not.
+#[cfg(unix)]
+#[test]
+fn list_output_is_byte_identical_at_every_thread_count() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    thread_identity_fixture(root.path());
+
+    for detect in ["open", "stat"] {
+        let mut baseline: Option<Vec<u8>> = None;
+        for threads in ["1", "4", "16"] {
+            let mut cmd = Command::cargo_bin("scap").unwrap();
+            isolated(&mut cmd, home.path(), root.path());
+            let out = cmd
+                .env("SCAP_LIST_THREADS", threads)
+                .env("SCAP_LIST_DETECT", detect)
+                .arg("list")
+                .assert()
+                .success();
+            let stdout = out.get_output().stdout.clone();
+            assert!(
+                !stdout.is_empty(),
+                "detect={detect} threads={threads}: the fixture has to print something, \
+                 or every comparison here passes vacuously"
+            );
+            match &baseline {
+                None => baseline = Some(stdout),
+                Some(first) => assert_eq!(
+                    String::from_utf8_lossy(first),
+                    String::from_utf8_lossy(&stdout),
+                    "detect={detect}: SCAP_LIST_THREADS={threads} printed different bytes"
+                ),
+            }
+        }
+    }
+}
+
+/// The two detection strategies read a different number of directories and
+/// still have to print the same bytes: W3.0b is choosing between two costs,
+/// not two semantics.
+#[cfg(unix)]
+#[test]
+fn list_output_does_not_depend_on_the_detection_strategy() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    thread_identity_fixture(root.path());
+
+    let run = |detect: &str| {
+        let mut cmd = Command::cargo_bin("scap").unwrap();
+        isolated(&mut cmd, home.path(), root.path());
+        let out = cmd.env("SCAP_LIST_DETECT", detect).arg("list").assert().success();
+        out.get_output().stdout.clone()
+    };
+    let open = run("open");
+    assert!(!open.is_empty(), "the fixture has to print something");
+    assert_eq!(String::from_utf8_lossy(&open), String::from_utf8_lossy(&run("stat")));
+}
+
+/// An out-of-range or unparsable `SCAP_LIST_THREADS` tunes how a listing is
+/// produced, never whether one is produced: it warns and falls back to the
+/// measured default rather than failing the command over a typo.
+#[test]
+fn list_warns_and_carries_on_for_an_unusable_thread_count() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    init_repo(root.path(), "github.com/a/x", false);
+
+    for value in ["0", "65", "four"] {
+        let mut cmd = Command::cargo_bin("scap").unwrap();
+        isolated(&mut cmd, home.path(), root.path());
+        cmd.env("SCAP_LIST_THREADS", value)
+            .arg("list")
+            .assert()
+            .success()
+            .stdout(predicate::eq("github.com/a/x\n"))
+            .stderr(predicate::str::contains("SCAP_LIST_THREADS"));
+    }
+}
+
+/// A valid `SCAP_LIST_THREADS` is the number the walk span reports, so the
+/// counter cannot claim a thread count the walk did not use.
+#[test]
+fn list_reports_the_resolved_thread_count_on_the_walk_span() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    init_repo(root.path(), "github.com/a/x", false);
+
+    for (value, expected) in [(None, 4), (Some("1"), 1), (Some("8"), 8), (Some("zero"), 4)] {
+        let mut cmd = Command::cargo_bin("scap").unwrap();
+        isolated(&mut cmd, home.path(), root.path());
+        cmd.env("SCAP_LOG", "debug");
+        if let Some(value) = value {
+            cmd.env("SCAP_LIST_THREADS", value);
+        }
+        let out = cmd.arg("list").assert().success();
+        let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+        assert_eq!(
+            span_field(&stderr, "threads"),
+            Some(expected),
+            "SCAP_LIST_THREADS={value:?}, stderr: {stderr}"
+        );
+    }
+}
+
+/// The postprocess span carries all three timings. `Span::record` on a field
+/// that was not declared at creation silently does nothing, so a field
+/// missing from the close line is the failure this guards against (ADR-9's
+/// instrumentation rule).
+#[test]
+fn list_records_the_postprocess_timings_on_its_own_span() {
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    init_repo(root.path(), "github.com/a/x", false);
+
+    let mut cmd = Command::cargo_bin("scap").unwrap();
+    isolated(&mut cmd, home.path(), root.path());
+    let out = cmd.env("SCAP_LOG", "debug").arg("list").assert().success();
+    let stderr = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+
+    assert!(stderr.contains("scap::list::postprocess"), "stderr: {stderr}");
+    for field in ["filter_us", "sort_us", "format_us"] {
+        assert!(span_field(&stderr, field).is_some(), "no {field} on the close line: {stderr}");
+    }
+}
