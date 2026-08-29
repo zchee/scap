@@ -91,6 +91,24 @@ impl Fixture {
         Self { _tmp: tmp, home, global }
     }
 
+    /// `n` plain `scap.root` lines and nothing else, for the
+    /// [`root_for_url`](scap::config::ConfigSnapshot::root_for_url) rule
+    /// (c) case that varies the root count rather than the include count.
+    fn with_roots(n: usize) -> Self {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = std::fs::canonicalize(tmp.path()).expect("canonicalize the tempdir");
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).expect("mkdir home");
+
+        let mut global = String::from("[scap]\n");
+        for i in 0..n {
+            global.push_str(&format!("\troot = /root-{i}\n"));
+        }
+        let path = home.join("gitconfig");
+        std::fs::write(&path, global).expect("write global gitconfig");
+        Self { _tmp: tmp, home, global: path }
+    }
+
     /// The isolated view: the system probe is skipped outright, the global
     /// file is the fixture's, and `cwd` is `None` so no repository is
     /// discovered and no repository-level file joins the source list.
@@ -146,4 +164,61 @@ fn load_by_include_count(bencher: Bencher, includes: usize) {
     bencher
         .with_inputs(|| fixture.env())
         .bench_values(|env| black_box(load(black_box(&env)).expect("the fixture gitconfig loads")));
+}
+
+/// [`ConfigSnapshot::root_for_url`](scap::config::ConfigSnapshot::root_for_url),
+/// ADR-8 rules (a)-(e) -- the one config hot path the whole-load benchmarks
+/// above cannot see, because it runs on a snapshot already in hand rather
+/// than during `load`. Every fixture's snapshot is built once, before the
+/// timed body starts; only the lookup itself is measured.
+///
+/// Rule (d) (a visible `[scap "<url>"]` section) is deliberately absent: it
+/// spawns `git config --get-urlmatch`, which every benchmark in this file
+/// avoids on principle (module doc).
+mod root_for_url {
+    use divan::{Bencher, black_box};
+    use scap::config::{Env, load};
+
+    use super::Fixture;
+
+    /// Rule (c): no url-scoped section is visible, so the last plain
+    /// `scap.root` wins, raw.
+    #[divan::bench]
+    fn rule_c_plain_last(bencher: Bencher) {
+        let fixture = Fixture::new(0, 0);
+        let snapshot = load(&fixture.env()).expect("the fixture gitconfig loads");
+        let url = "https://github.com/x/y";
+        bencher.bench(|| black_box(snapshot.root_for_url(black_box(url)).expect("root_for_url")));
+    }
+
+    /// Rule (a): `SCAP_ROOT` wins outright over every configured root.
+    #[divan::bench]
+    fn rule_a_scap_root_env(bencher: Bencher) {
+        let fixture = Fixture::new(0, 0);
+        let env = Env { scap_root: Some("/env-root".into()), ..fixture.env() };
+        let snapshot = load(&env).expect("the fixture gitconfig loads");
+        let url = "https://github.com/x/y";
+        bencher.bench(|| black_box(snapshot.root_for_url(black_box(url)).expect("root_for_url")));
+    }
+
+    /// Rules (b)+(e): a codecommit target skips urlmatch and lands on the
+    /// canonicalised primary root instead of rule (c)'s raw last value.
+    #[divan::bench]
+    fn rule_b_codecommit(bencher: Bencher) {
+        let fixture = Fixture::new(0, 0);
+        let snapshot = load(&fixture.env()).expect("the fixture gitconfig loads");
+        let url = "codecommit://us-east-1/codecommit/my-repo";
+        bencher.bench(|| black_box(snapshot.root_for_url(black_box(url)).expect("root_for_url")));
+    }
+
+    /// Rule (c) again, over 8 plain roots instead of 2: `Vec::last` is O(1),
+    /// so this isolates whether the surrounding lookup scales with root
+    /// count at all.
+    #[divan::bench]
+    fn rule_c_eight_plain_roots(bencher: Bencher) {
+        let fixture = Fixture::with_roots(8);
+        let snapshot = load(&fixture.env()).expect("the fixture gitconfig loads");
+        let url = "https://github.com/x/y";
+        bencher.bench(|| black_box(snapshot.root_for_url(black_box(url)).expect("root_for_url")));
+    }
 }

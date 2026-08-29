@@ -704,8 +704,23 @@ impl ConfigSnapshot {
         Ok(deduped)
     }
 
-    // ghq local_repository.go:123-142, ADR-8 rules (a)-(e).
-    fn root_for_url(&self, url: &str) -> Result<PathBuf, ConfigError> {
+    /// Where a clone of `url` belongs, reproducing git's own answer to
+    /// `git config --path --get-urlmatch scap.root <url>` (ghq
+    /// `local_repository.go:123-142`, ADR-8 rules (a)-(e)):
+    ///
+    /// - (a) `SCAP_ROOT` is set: its first entry wins outright.
+    /// - (b) `url` is a codecommit target: skip urlmatch, return the
+    ///   primary root.
+    /// - (c) no url-scoped section is visible: the LAST plain `scap.root`,
+    ///   `--path`-interpolated, raw (never canonicalised).
+    /// - (d) a `[scap "<url>"]` section is visible: delegate to `git config
+    ///   --get-urlmatch`, memoised per distinct URL for the process.
+    /// - (e) no `scap.root` anywhere: fall back to the canonicalised
+    ///   primary root.
+    ///
+    /// The free [`root_for_url`] function delegates here on the
+    /// process-wide [`snapshot`].
+    pub fn root_for_url(&self, url: &str) -> Result<PathBuf, ConfigError> {
         let snapshot = self;
 
         // (a) `SCAP_ROOT` wins outright.
