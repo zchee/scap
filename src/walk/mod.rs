@@ -71,18 +71,28 @@ const FD_CAP: usize = 4096;
 /// not: on the frozen corpus a′, open-and-scan reads 2,036 directories where
 /// stat-first reads 1,196, the difference being the repositories the former
 /// opens and the latter does not.
+///
+/// W3.0b measured the two at `N*` = 4 on a′, a and a+b and froze
+/// [`StatFirst`](DetectStrategy::StatFirst) as the default. The expectation
+/// written into the variants below — that opening pays for itself on a
+/// directory-dense tree — did not survive contact with the corpora: an
+/// `openat` that returns a descriptor costs more than a `statat` that
+/// returns `ENOENT` by enough that stat-first won every corpus, including
+/// the directory-dense a+b.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum DetectStrategy {
     /// Open every candidate directory and look for `.git` among the entries
-    /// already read. Cheaper on directory-dense trees, where most directories
-    /// have to be opened anyway: corpus a+b holds 21,360 directories against
-    /// 1,822 repositories.
-    #[default]
+    /// already read. Predicted to be cheaper on directory-dense trees, where
+    /// most directories have to be opened anyway — corpus a+b holds 21,360
+    /// directories against 1,822 repositories — but measured slower there
+    /// too (W3.0b), so it survives only as an override.
     OpenScan,
     /// `statat` the candidate's `.git` before opening it, and never open a
     /// repository. Cheaper on repository-dense trees, where the saved opens
     /// outnumber the added stats: corpus a′ holds 2,036 directories against
-    /// 841 repositories.
+    /// 841 repositories. **The default**, and measured faster on every
+    /// corpus, not only the repository-dense one (W3.0b).
+    #[default]
     StatFirst,
 }
 
@@ -121,10 +131,12 @@ fn parse_threads(value: Option<&OsStr>) -> usize {
 
 /// The detection strategy `SCAP_LIST_DETECT` selects, or the default.
 ///
-/// The variable exists to measure the two strategies against each other on
-/// the real corpora (W3.0b) and is deliberately undocumented until that
-/// measurement freezes a default; it is not part of scap's supported surface
-/// and carries no ADR-13 row yet.
+/// An ADR-13 divergence, kept for the same reason as [`threads_from_env`]:
+/// W3.0b froze the default from measurements on one machine's filesystem,
+/// and a tree shaped unlike the author's — far more directories per
+/// repository than corpus a+b's 11.7 — is where the losing strategy could
+/// still win. ghq has no equivalent knob; it only ever `stat`s a candidate's
+/// `.git`, which is what [`DetectStrategy::StatFirst`] does.
 pub(crate) fn detect_strategy_from_env() -> DetectStrategy {
     parse_detect_strategy(std::env::var_os("SCAP_LIST_DETECT").as_deref())
 }
@@ -240,8 +252,8 @@ impl RootListing {
     /// Directories whose entries were read.
     ///
     /// The count is strategy-dependent — see [`DetectStrategy`] — and it
-    /// counts repository directories under `OpenScan`, which the previous
-    /// jwalk walker did not.
+    /// counts repository directories under `OpenScan`, which neither the
+    /// default `StatFirst` nor the previous jwalk walker does.
     pub fn dirs_read(&self) -> usize {
         self.dirs_read
     }

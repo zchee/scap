@@ -739,6 +739,17 @@ fn both_strategies_agree_on_the_repository_set_and_disagree_on_the_reads() {
 }
 
 #[test]
+fn the_default_detection_strategy_is_the_one_w3_0b_froze() {
+    // W3.0b measured both strategies at N* = 4 on corpora a', a and a+b and
+    // froze stat-first: it was faster on every one, including the
+    // directory-dense a+b the other was predicted to win. The other tests
+    // here compare against `DetectStrategy::default()` and so would follow a
+    // flip silently; this one names the frozen answer, so re-deciding it
+    // requires re-measuring rather than editing one attribute.
+    assert_eq!(DetectStrategy::default(), DetectStrategy::StatFirst);
+}
+
+#[test]
 fn parse_detect_strategy_reads_the_two_documented_values() {
     assert_eq!(parse_detect_strategy(Some(OsStr::new("open"))), DetectStrategy::OpenScan);
     assert_eq!(parse_detect_strategy(Some(OsStr::new("stat"))), DetectStrategy::StatFirst);
