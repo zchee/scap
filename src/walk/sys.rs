@@ -184,6 +184,17 @@ impl Out {
     pub(crate) fn emit(&mut self, rel: &[u8]) {
         self.arena.push(if rel.is_empty() { b"." } else { rel });
     }
+
+    /// Folds another worker's output into this one.
+    ///
+    /// This is where the counters are summed, which is why they are plain
+    /// integers: each worker owns its own, so the per-entry path never
+    /// touches an atomic.
+    pub(crate) fn merge(&mut self, other: &Out) {
+        self.arena.merge(&other.arena);
+        self.dirs_read += other.dirs_read;
+        self.excluded += other.excluded;
+    }
 }
 
 /// Immutable state every worker shares for the length of one root's walk.
@@ -199,6 +210,14 @@ pub(crate) struct Ctx<'a> {
     pub(crate) live_fds: &'a AtomicUsize,
     /// The value of `live_fds` past which queued directories carry a path
     /// instead of a descriptor.
+    ///
+    /// A soft bound, not a hard one: the check and the `openat` that follows
+    /// it are not atomic, so with `N` workers the parked total can reach
+    /// about `fd_cap + N - 1`. On top of that each worker holds one
+    /// descriptor for the directory it is reading, so the walk's own peak is
+    /// roughly `fd_cap + 2N`. Both are far below any `RLIMIT_NOFILE` worth
+    /// having at the default cap, and the EMFILE arms make the real limit
+    /// arriving early a re-queue rather than a lost subtree.
     pub(crate) fd_cap: usize,
 }
 
@@ -253,10 +272,12 @@ impl<'a> Walker<'a> {
                     Ok(fd) => fd,
                     // Nothing left to fall back to: the job already gave its
                     // descriptor up, so this subtree is dropped and the
-                    // listing is short. That has to be loud even though ghq
-                    // has no equivalent condition. W3.2's pool could retry
-                    // this once the queue drains; until it does, the warning
-                    // is the whole mitigation.
+                    // listing is short. A standing limitation, and the reason
+                    // it is loud even though ghq has no equivalent condition
+                    // — a silently short listing is the one failure a
+                    // repository lister must not have. Retrying the job once
+                    // the queue has drained would remove it; that is a
+                    // follow-up, and the warning is today's whole mitigation.
                     Err(err @ (Errno::MFILE | Errno::NFILE)) => {
                         tracing::warn!(
                             "{}: {}; subtree skipped",

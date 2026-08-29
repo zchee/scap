@@ -1185,6 +1185,7 @@ dependencies = [
  "bstr",
  "clap",
  "codspeed-divan-compat",
+ "crossbeam-deque",
  "gix-config",
  "gix-discover",
  "gix-glob",

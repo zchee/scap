@@ -19,6 +19,7 @@
 //! detail that could be swapped for a Windows equivalent.
 
 mod arena;
+mod pool;
 mod sys;
 
 use std::ffi::{CString, OsStr};
@@ -32,6 +33,7 @@ use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags};
 use rustix::io::Errno;
 
 use self::arena::Arena;
+use self::pool::MAX_THREADS;
 use self::sys::{Ctx, Out, Walker};
 
 /// Worker threads a walk uses unless the caller says otherwise.
@@ -82,6 +84,39 @@ pub enum DetectStrategy {
     /// outnumber the added stats: corpus a′ holds 2,036 directories against
     /// 841 repositories.
     StatFirst,
+}
+
+/// The worker-thread count `SCAP_LIST_THREADS` selects, or
+/// [`DEFAULT_THREADS`].
+///
+/// An ADR-13 divergence: ghq's walker has a fixed pool and no equivalent
+/// knob. It exists because `N*` was measured on one machine's filesystem and
+/// core count, and neither is universal.
+pub fn threads_from_env() -> usize {
+    parse_threads(std::env::var_os("SCAP_LIST_THREADS").as_deref())
+}
+
+/// Parses one `SCAP_LIST_THREADS` value.
+///
+/// Unset or empty means the measured default. Anything else that is not a
+/// plain decimal in `1..=64` warns and falls back to it rather than failing
+/// the listing: the variable tunes how a listing is produced, never whether
+/// one is produced, so refusing to run over it would trade a working command
+/// for a typo.
+fn parse_threads(value: Option<&OsStr>) -> usize {
+    let Some(value) = value.filter(|v| !v.is_empty()) else {
+        return DEFAULT_THREADS;
+    };
+    match value.to_str().and_then(|v| v.parse::<usize>().ok()) {
+        Some(threads) if (1..=MAX_THREADS).contains(&threads) => threads,
+        _ => {
+            tracing::warn!(
+                "SCAP_LIST_THREADS={}: expected a number in 1..={MAX_THREADS}; using {DEFAULT_THREADS}",
+                value.as_bytes().as_bstr()
+            );
+            DEFAULT_THREADS
+        }
+    }
 }
 
 /// The detection strategy `SCAP_LIST_DETECT` selects, or the default.
@@ -151,7 +186,8 @@ impl Pattern {
 /// How one root is to be walked.
 #[derive(Clone, Debug)]
 pub struct WalkOptions {
-    /// Worker threads. Clamped to `1..=64`; see [`DEFAULT_THREADS`].
+    /// Worker threads, clamped to `1..=64` by the pool; see
+    /// [`DEFAULT_THREADS`] and [`threads_from_env`].
     pub threads: usize,
     /// Subtrees to prune, matched against root-relative paths (rule viii).
     pub exclude: Vec<Pattern>,
@@ -313,17 +349,18 @@ pub(crate) fn walk_root_capped(
     let mut queue = Vec::new();
     walker.read_dir(read_fd, b"", &mut queue);
 
-    // W3.1 drains the queue on the calling thread, newest directory first,
-    // which is the order the per-thread deques pop in as well. W3.2 replaces
-    // this loop with the work-stealing pool and `opts.threads` starts being
-    // read; the entry semantics above are what both share, and neither can
-    // change the repository set the other would have produced.
-    let base_fd = base_fd.as_fd();
-    while let Some(job) = queue.pop() {
-        walker.run(job, base_fd, &mut queue);
+    let mut out = walker.into_out();
+    // A root with nothing to descend into skips the pool rather than paying
+    // to start threads it would immediately join. Otherwise every worker
+    // returns its own output and the merge sums them, which is also where
+    // the counters are added up.
+    if !queue.is_empty() {
+        for part in pool::run(&ctx, base_fd.as_fd(), queue, opts.threads) {
+            out.merge(&part);
+        }
     }
 
-    Ok(RootListing::from_out(walker.into_out()))
+    Ok(RootListing::from_out(out))
 }
 
 /// ADR-9 rule (vi): whether this root is worth handing to the walker.

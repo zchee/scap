@@ -547,6 +547,153 @@ fn patterns_are_anchored_at_the_root_and_case_sensitive() {
 }
 
 // ---------------------------------------------------------------------------
+// Scheduling (the repository set must not depend on it)
+// ---------------------------------------------------------------------------
+
+/// A tree wide and deep enough that four workers genuinely interleave on it:
+/// 8 hosts x 8 owners x 32 children, every fourth child a repository.
+///
+/// Returns the directories each strategy reads and the repositories both must
+/// find. The two read counts differ by exactly the repositories, which
+/// open-and-scan opens and stat-first does not.
+fn wide_tree(root: &Path) -> (usize, usize, usize) {
+    for host in 0..8 {
+        for owner in 0..8 {
+            for n in 0..32 {
+                let rel = format!("host{host}/owner{owner}/n{n:02}");
+                if n % 4 == 0 {
+                    repo(root, &rel);
+                } else {
+                    dir(root, &rel);
+                }
+            }
+        }
+    }
+    let repos = 8 * 8 * 8;
+    // 1 root + 8 hosts + 64 owners + 2,048 children, all of which
+    // open-and-scan reads, repositories included; stat-first reads the same
+    // set less the repositories.
+    let open_reads = 1 + 8 + 64 + 8 * 8 * 32;
+    (open_reads, open_reads - repos, repos)
+}
+
+#[test]
+fn the_repository_set_does_not_depend_on_the_worker_count() {
+    // The whole point of the pool: scheduling decides the order directories
+    // are read in and nothing else. Walk order is not asserted — it is
+    // genuinely non-deterministic, and `list` sorts once at the end — but the
+    // set, the count and both counters have to come out the same every time.
+    let tmp = tempdir();
+    let root = tmp.path();
+    let (open_reads, stat_reads, repos) = wide_tree(root);
+
+    for detect in BOTH {
+        let expected_reads =
+            if detect == DetectStrategy::OpenScan { open_reads } else { stat_reads };
+        let mut baseline: Option<Vec<String>> = None;
+        for threads in [1, 2, 4, 16] {
+            let opts = WalkOptions { threads, exclude: Vec::new(), detect };
+            let listing = walk_root(root, &opts).expect("walk_root");
+            let found: Vec<String> =
+                sorted(&listing).iter().map(|p| String::from_utf8_lossy(p).into_owned()).collect();
+
+            assert_eq!(found.len(), repos, "{detect:?} at {threads} workers");
+            assert_eq!(
+                listing.dirs_read(),
+                expected_reads,
+                "{detect:?} at {threads} workers: every directory is read exactly once"
+            );
+            assert_eq!(listing.excluded(), 0);
+
+            match &baseline {
+                None => baseline = Some(found),
+                Some(first) => assert_eq!(
+                    &found, first,
+                    "{detect:?}: {threads} workers found a different set than 1 worker did"
+                ),
+            }
+        }
+    }
+}
+
+#[test]
+fn the_edge_fixtures_survive_every_worker_count() {
+    // The rules that cost a syscall to decide — symlink resolution, the
+    // `<link>/.git` probe, the bare-repository shortcut — are the ones a
+    // racing worker could plausibly disturb, so they get the same treatment
+    // as the wide tree.
+    let tmp = tempdir();
+    let root = tmp.path();
+    repo(root, "github.com/a/x");
+    repo(root, "plain/nested/repo");
+    dir(root, "store/upstream.git");
+    dir(root, "worktree");
+    fs::write(root.join("worktree/.git"), b"gitdir: /elsewhere/.git\n").expect("write gitfile");
+    symlink(root.join("github.com/a/x"), root.join("mirror")).expect("symlink");
+    symlink(root.join("plain"), root.join("link-to-plaindir")).expect("symlink");
+    symlink(root.join("store/upstream.git"), root.join("link-to-baregit")).expect("symlink");
+    symlink("nowhere", root.join("dangling")).expect("symlink");
+    symlink(root, root.join("loop")).expect("symlink");
+
+    let expected =
+        vec!["github.com/a/x", "mirror", "plain/nested/repo", "store/upstream.git", "worktree"];
+    for detect in BOTH {
+        for threads in [1, 2, 4, 16] {
+            let opts = WalkOptions { threads, exclude: Vec::new(), detect };
+            assert_eq!(walk(root, &opts), expected, "{detect:?} at {threads} workers");
+        }
+    }
+}
+
+#[test]
+fn parse_threads_accepts_the_documented_range_and_falls_back_otherwise() {
+    assert_eq!(parse_threads(Some(OsStr::new("1"))), 1);
+    assert_eq!(parse_threads(Some(OsStr::new("16"))), 16);
+    assert_eq!(parse_threads(Some(OsStr::new("64"))), MAX_THREADS);
+
+    // Unset and empty mean "no opinion", and every malformed spelling falls
+    // back rather than failing the listing.
+    assert_eq!(parse_threads(None), DEFAULT_THREADS);
+    assert_eq!(parse_threads(Some(OsStr::new(""))), DEFAULT_THREADS);
+    assert_eq!(parse_threads(Some(OsStr::new("0"))), DEFAULT_THREADS);
+    assert_eq!(parse_threads(Some(OsStr::new("65"))), DEFAULT_THREADS);
+    assert_eq!(parse_threads(Some(OsStr::new("-1"))), DEFAULT_THREADS);
+    assert_eq!(parse_threads(Some(OsStr::new("4 "))), DEFAULT_THREADS);
+    assert_eq!(parse_threads(Some(OsStr::new("four"))), DEFAULT_THREADS);
+}
+
+#[test]
+fn a_rejected_thread_count_says_so_rather_than_changing_nothing_silently() {
+    // Falling back without a word would leave a user who typed `=0` believing
+    // the walk honoured it, and a measurement row secretly identical to the
+    // default row.
+    for value in ["four", "0", "65"] {
+        let logged = captured_warnings(|| {
+            assert_eq!(parse_threads(Some(OsStr::new(value))), DEFAULT_THREADS);
+        });
+        assert!(
+            logged.contains("SCAP_LIST_THREADS") && logged.contains("using 4"),
+            "{value:?} should warn and name the fallback; got: {logged}"
+        );
+    }
+}
+
+#[test]
+fn an_unset_variable_leaves_the_measured_default_in_place() {
+    // The suite cannot set the variable to check the other direction --
+    // Edition 2024 makes `set_var` unsafe and this crate denies unsafe, which
+    // is why the parser above is a pure function over the value. What is
+    // testable here is the case that actually reaches users: nothing set, so
+    // the walk runs on the thread count W0.2 measured.
+    assert_eq!(
+        std::env::var_os("SCAP_LIST_THREADS"),
+        None,
+        "unset SCAP_LIST_THREADS to run the suite; it changes what the walk does"
+    );
+    assert_eq!(threads_from_env(), DEFAULT_THREADS);
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor budget, options and the detection switch
 // ---------------------------------------------------------------------------
 

@@ -9,10 +9,9 @@
 //! that amortise, rather than 1,822 separate ones.
 //!
 //! Handles are offsets rather than borrowed slices because each worker fills
-//! its own arena and the per-root arena is their concatenation: merging two
-//! arenas shifts the incoming handles by the current byte length, which a
-//! borrowed slice could not survive. The merge itself arrives with the pool
-//! in W3.2; until then one walk fills one arena.
+//! its own arena and the per-root arena is their concatenation:
+//! [`Arena::merge`] shifts the incoming handles by the current byte length,
+//! which a borrowed slice could not survive.
 
 use std::ops::Range;
 
@@ -60,6 +59,21 @@ impl Arena {
     /// (ADR-9 rule vii).
     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = &[u8]> {
         self.repos.iter().map(|r| &self.bytes[r.start as usize..r.end as usize])
+    }
+
+    /// Appends every path held by `other`, shifting its handles into this
+    /// arena's coordinate space.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the merged arena would grow past 4 GiB.
+    pub(crate) fn merge(&mut self, other: &Arena) {
+        let shift = Self::offset(self.bytes.len());
+        self.bytes.extend_from_slice(&other.bytes);
+        // One conversion covers every incoming handle: they are all bounded
+        // by the merged length, so if that fits in a `u32` so do they.
+        let _ = Self::offset(self.bytes.len());
+        self.repos.extend(other.repos.iter().map(|r| r.start + shift..r.end + shift));
     }
 
     fn offset(len: usize) -> u32 {
