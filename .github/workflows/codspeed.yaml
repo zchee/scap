@@ -54,12 +54,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # rust-toolchain.toml pins the same channel; naming it here means the
-      # toolchain is installed in one step instead of on first cargo use.
-      - name: Install the pinned toolchain
+      # rust-toolchain.toml names the same floating channel; naming it here means
+      # the toolchain is installed in one step instead of on first cargo use.
+      - name: Install the nightly toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-28
+          toolchain: nightly
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -94,10 +94,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install the pinned toolchain
+      - name: Install the nightly toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-28
+          toolchain: nightly
 
       - uses: Swatinem/rust-cache@v2
 

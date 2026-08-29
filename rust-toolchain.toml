@@ -1,14 +1,11 @@
 [toolchain]
-# ADR-12: dated pin for the duration of the optimization plan (W1.2 -> W5.2),
-# an approved deviation from CLAUDE.md "Toolchain" (floating `nightly`).
-#
-# `nightly-2026-08-28` resolves to rustc 1.100.0-nightly (e457a7b0d
-# 2026-08-27) -- the exact compiler that built every Phase-0 binary and every
-# frozen threshold in docs/plans/2026-08-28-theoretical-limit-optimization.md.
-# A rustup channel is named for the date the nightly was *published*, which is
-# the day after the commit it was built from; the plan's ADR-12 text names
-# `nightly-2026-08-27` after that commit date instead. The channel below is
-# the one that reproduces the commit hash, verified with `rustup run
-# nightly-2026-08-28 rustc -Vv`.
-channel = "nightly-2026-08-28"
+# Floating `nightly` per CLAUDE.md "Toolchain". The ADR-12 dated pin
+# (`nightly-2026-08-28`, rustc e457a7b0d) covered W1.2 onward and was
+# lifted early by user ruling on 2026-08-30 (originally scheduled for
+# W5.2): the project is still in development, so reproducible-gate
+# concerns yield to tracking current nightly. Frozen benchmark numbers
+# in docs/benchmarks/ were measured under the pin; fingerprints of
+# binaries built after this change will not match the d2eb8054-era
+# values, and that is expected.
+channel = "nightly"
 components = ["rustfmt", "clippy"]
