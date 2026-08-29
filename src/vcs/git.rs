@@ -146,16 +146,42 @@ pub fn stale_tmp_paths(dest: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Whether a process with `pid` exists, as `kill(pid, 0)` reports it.
+///
+/// Decision D-1: this is `rustix::process::test_kill_process`, a safe
+/// wrapper over that syscall, and not a `kill -0` subprocess -- one spawn
+/// per stale-tmp candidate was the last non-VCS process `get` created.
+///
+/// Three cases, and only the first two are "the directory is in use":
+///
+/// * `Ok(())` -- the process exists and is signalable: alive.
+/// * `EPERM` -- the process exists but belongs to another user, so scap may
+///   not signal it. It is alive, and its temporary directory is emphatically
+///   not this process's to delete.
+/// * anything else (`ESRCH` in practice) -- no such process: not alive.
+///
+/// A suffix that is not a pid this program could have written -- `0`, or a
+/// negative number -- is reported as not alive, so the directory becomes a
+/// cleanup candidate. `std::process::id()` is always positive, so such a
+/// name was not produced by scap. This is a deliberate narrowing of the old
+/// probe, under which `kill -0 0` addressed the caller's own process group
+/// and therefore reported *alive* for `<name>.tmp-0`.
 #[cfg(unix)]
 fn pid_is_alive(pid: i32) -> bool {
-    use std::process::Command;
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    // `Pid::from_raw` debug-asserts a non-negative argument, so screen the
+    // sign here rather than letting a hostile directory name panic a debug
+    // build.
+    if pid <= 0 {
+        return false;
+    }
+    let Some(pid) = rustix::process::Pid::from_raw(pid) else {
+        return false;
+    };
+    match rustix::process::test_kill_process(pid) {
+        Ok(()) => true,
+        Err(rustix::io::Errno::PERM) => true,
+        Err(_) => false,
+    }
 }
 
 #[cfg(not(unix))]

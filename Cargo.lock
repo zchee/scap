@@ -999,6 +999,7 @@ dependencies = [
  "jwalk",
  "predicates",
  "regex",
+ "rustix",
  "tempfile",
  "thiserror",
  "tracing",

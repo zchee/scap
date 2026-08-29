@@ -6,6 +6,10 @@ use assert_cmd::Command as AssertCommand;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
+mod support;
+
+use support::RecordingGit;
+
 fn isolated(cmd: &mut AssertCommand, home: &Path, root: &Path) {
     let cfg = home.join("gitconfig");
     if !cfg.exists() {
@@ -410,4 +414,136 @@ fn get_spans_emit_with_scap_log_debug() {
         s.contains("scap::vcs::git") || s.contains("clone"),
         "expected scap::vcs::git::clone span; got: {s}"
     );
+}
+
+// -- spawn accounting (V-3, AC-2/AC-2') -----------------------------------
+
+/// Isolate `cmd` the way the spawn-ledger cases need it: no `SCAP_ROOT`, so
+/// the root has to come out of the configuration, supplied by a
+/// **url-section-free** `GIT_CONFIG_GLOBAL` fixture. With no `[scap "<url>"]`
+/// section in sight, ADR-8 rule (c) answers `root_for_url` in process and
+/// `git config --get-urlmatch` is never reached.
+fn config_root(cmd: &mut AssertCommand, home: &Path, root: &Path) {
+    let cfg = home.join("gitconfig");
+    fs::write(&cfg, format!("[scap]\n\troot = {}\n", root.display())).unwrap();
+    cmd.env_remove("SCAP_ROOT")
+        .env_remove("SCAP_CONFIG_BACKEND")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", &cfg)
+        .env("HOME", home)
+        // Keep repository discovery out of whatever tree the test runner sits
+        // in, so the local config of *this* checkout cannot leak in.
+        .current_dir(home);
+}
+
+/// Put the recording wrapper first on `PATH`, so every `git` scap spawns
+/// lands in [`RecordingGit::lines`] before reaching the real binary.
+fn through_recording_git(cmd: &mut AssertCommand, git: &RecordingGit) {
+    cmd.env("PATH", git.path_prepend());
+    for (key, value) in git.env() {
+        cmd.env(key, value);
+    }
+}
+
+/// The 12 `file://` origins AC-2 is stated over, and their newline-joined
+/// stdin form.
+fn twelve_origins() -> (Vec<TempDir>, String) {
+    let origins: Vec<TempDir> = (0..12).map(|_| init_bare_origin()).collect();
+    let mut stdin = String::new();
+    for o in &origins {
+        stdin.push_str(&format!("file://{}\n", o.path().display()));
+    }
+    (origins, stdin)
+}
+
+fn assert_twelve_clones(root: &Path, origins: &[TempDir]) {
+    for o in origins {
+        let dest = scap_dest_for(root, o.path(), false);
+        assert!(dest.join(".git").is_dir(), "clone missing for {}", o.path().display());
+    }
+}
+
+#[test]
+fn get_parallel_spawns_exactly_one_clone_per_target() {
+    // AC-2, the A4 default: 12 targets, 12 `git` invocations, every one of
+    // them the clone itself. Before W2.1 this log also held 36 `config`
+    // lines -- three per target -- and before W2.3 the stale-tmp sweep added
+    // a `kill` spawn per candidate.
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    let git = RecordingGit::new();
+    let (origins, stdin) = twelve_origins();
+
+    let mut cmd = AssertCommand::cargo_bin("scap").unwrap();
+    config_root(&mut cmd, home.path(), root.path());
+    through_recording_git(&mut cmd, &git);
+    cmd.args(["get", "-P"]).write_stdin(stdin).assert().success();
+
+    assert_twelve_clones(root.path(), &origins);
+
+    let lines = git.lines();
+    assert_eq!(lines.len(), 12, "AC-2: one spawn per target, got {lines:?}");
+    for line in &lines {
+        assert!(line.starts_with("clone"), "AC-2: only clones may be spawned, got {line:?}");
+    }
+}
+
+#[test]
+fn get_parallel_under_the_git_backend_adds_one_config_list() {
+    // AC-2': the A3 fallback pays exactly one `git config --list` for the
+    // whole process -- the snapshot is built once and every target reads it.
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    let git = RecordingGit::new();
+    let (origins, stdin) = twelve_origins();
+
+    let mut cmd = AssertCommand::cargo_bin("scap").unwrap();
+    config_root(&mut cmd, home.path(), root.path());
+    through_recording_git(&mut cmd, &git);
+    cmd.env("SCAP_CONFIG_BACKEND", "git").args(["get", "-P"]).write_stdin(stdin).assert().success();
+
+    assert_twelve_clones(root.path(), &origins);
+
+    let lines = git.lines();
+    let clones = lines.iter().filter(|l| l.starts_with("clone")).count();
+    let config_lists = lines.iter().filter(|l| l.starts_with("config --list")).count();
+    assert_eq!(clones, 12, "AC-2': one clone per target, got {lines:?}");
+    assert!(config_lists <= 1, "AC-2': at most one snapshot spawn, got {lines:?}");
+    assert_eq!(
+        clones + config_lists,
+        lines.len(),
+        "AC-2': nothing but clones and the one snapshot spawn, got {lines:?}"
+    );
+}
+
+#[test]
+fn get_look_on_an_existing_repo_spawns_no_git() {
+    // `--look` resolves its destination from the same snapshot the targets
+    // used, so on an existing clone it runs no VCS operation and reads no
+    // configuration out of process: the log stays empty.
+    let home = TempDir::new().unwrap();
+    let root = TempDir::new().unwrap();
+    let origin = init_bare_origin();
+    let url = format!("file://{}", origin.path().display());
+
+    let mut seed = AssertCommand::cargo_bin("scap").unwrap();
+    config_root(&mut seed, home.path(), root.path());
+    seed.args(["get", "--silent", &url]).assert().success();
+
+    let probe = home.path().join("shell.sh");
+    fs::write(&probe, "#!/bin/sh\nexit 0\n").unwrap();
+    let mut perms = fs::metadata(&probe).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o755);
+    fs::set_permissions(&probe, perms).unwrap();
+
+    let git = RecordingGit::new();
+    let mut cmd = AssertCommand::cargo_bin("scap").unwrap();
+    config_root(&mut cmd, home.path(), root.path());
+    through_recording_git(&mut cmd, &git);
+    cmd.env("SHELL", &probe).args(["get", "--look", "--silent", &url]).assert().success();
+
+    assert_eq!(git.lines(), Vec::<String>::new(), "--look on an existing repo must spawn nothing");
 }

@@ -14,7 +14,12 @@ const EX_TEMPFAIL: i32 = 75;
 pub fn run(args: &GetArgs) -> anyhow::Result<()> {
     validate_vcs(args.vcs.as_deref())?;
 
-    let mut effective = args.clone_lite();
+    // W2.3: the two identity keys are target-independent, so they are read
+    // from the process snapshot once here -- before the worker pool exists --
+    // and carried in `Effective` rather than re-read per target. Reading them
+    // on this thread also keeps the snapshot's one-time construction (and the
+    // fatal exit ADR-8 gives an unsatisfiable trigger) off the workers.
+    let mut effective = args.clone_lite(config::snapshot());
     if effective.parallel {
         effective.silent = true;
     }
@@ -52,10 +57,14 @@ struct Effective {
     bare: bool,
     partial: Option<String>,
     parallel: bool,
+    /// `scap.user`, borrowed from the process snapshot.
+    user: Option<&'static str>,
+    /// `scap.completeUser`, read from the same snapshot.
+    complete_user: bool,
 }
 
 impl GetArgs {
-    fn clone_lite(&self) -> Effective {
+    fn clone_lite(&self, config: &'static config::ConfigSnapshot) -> Effective {
         Effective {
             update: self.update,
             ssh: self.ssh,
@@ -67,6 +76,8 @@ impl GetArgs {
             bare: self.bare,
             partial: self.partial.clone(),
             parallel: self.parallel,
+            user: config.user(),
+            complete_user: config.complete_user(),
         }
     }
 }
@@ -102,9 +113,7 @@ fn collect_targets(args: &GetArgs) -> anyhow::Result<Vec<String>> {
 #[tracing::instrument(name = "scap::cmd::get", skip(args), fields(target = %target))]
 fn process_target(args: &Effective, target: &str) -> anyhow::Result<()> {
     tracing::debug!(target, "scap::cmd::get processing target");
-    let scap_user = config::user()?;
-    let complete_user = config::complete_user()?;
-    let repo = url::from_input(target, scap_user.as_deref(), complete_user)?;
+    let repo = url::from_input(target, args.user, args.complete_user)?;
 
     let remote = if repo.host.is_empty() {
         repo.original_input.clone()
@@ -200,9 +209,9 @@ fn tmp_path_for(dest: &Path, pid: u32) -> PathBuf {
 }
 
 fn exec_look(args: &Effective, target: &str) -> anyhow::Result<()> {
-    let scap_user = config::user()?;
-    let complete_user = config::complete_user()?;
-    let repo = url::from_input(target, scap_user.as_deref(), complete_user)?;
+    // Same snapshot as every target took: `--look` resolves its destination
+    // without reopening the configuration.
+    let repo = url::from_input(target, args.user, args.complete_user)?;
     let remote = if repo.host.is_empty() {
         repo.original_input.clone()
     } else if args.ssh {
