@@ -1,177 +1,710 @@
-use std::io::Write;
-use std::path::Path;
+//! Unit tests for the in-process configuration loader (ADR-8).
+//!
+//! Every case drives [`load`] through an injected [`Env`], so nothing here
+//! mutates the process environment: that is what let W2.1 delete
+//! `serial_test` and the last two `unsafe` blocks in the tree. Fixtures are
+//! real files in a real temp directory, and the expectations that need an
+//! oracle run the real `git`.
 
-use serial_test::serial;
+use std::path::{Path, PathBuf};
+
 use tempfile::TempDir;
 
 use super::*;
 
-struct EnvGuard {
-    keys: Vec<(&'static str, Option<std::ffi::OsString>)>,
+/// A temp tree plus the [`Env`] view that points at it.
+struct Fixture {
     _tmp: TempDir,
+    /// The temp directory's physical spelling. On macOS `TempDir` hands back
+    /// a `/var/...` path whose real location is `/private/var/...`, and
+    /// `resolve_roots` canonicalises, so the fixture works in physical paths
+    /// throughout and the expectations stay literal.
+    root: PathBuf,
 }
 
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        for (k, v) in self.keys.drain(..) {
-            match v {
-                Some(val) => set_env(k, &val),
-                None => unset_env(k),
-            }
+impl Fixture {
+    fn new() -> Self {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = std::fs::canonicalize(tmp.path()).expect("canonicalize the tempdir");
+        std::fs::create_dir_all(root.join("home")).expect("mkdir home");
+        std::fs::create_dir_all(root.join("cwd")).expect("mkdir cwd");
+        Self { _tmp: tmp, root }
+    }
+
+    fn path(&self) -> &Path {
+        &self.root
+    }
+
+    fn home(&self) -> PathBuf {
+        self.root.join("home")
+    }
+
+    fn cwd(&self) -> PathBuf {
+        self.root.join("cwd")
+    }
+
+    /// Write `contents` to `rel` inside the fixture, creating parents.
+    fn write(&self, rel: &str, contents: &str) -> PathBuf {
+        let path = self.root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir -p fixture parent");
         }
+        std::fs::write(&path, contents).expect("write fixture file");
+        path
+    }
+
+    /// An isolated view: no system config (the probe list is empty), `HOME`
+    /// and the working directory inside the fixture, and the real `PATH` so
+    /// the A3 backend can still find a real `git`.
+    fn env(&self) -> Env {
+        Env {
+            home: Some(self.home()),
+            cwd: Some(self.cwd()),
+            path: std::env::var_os("PATH"),
+            ..Default::default()
+        }
+    }
+
+    /// A real repository at `cwd`, created by the real `git`, then given
+    /// `local_config` as its repository-level configuration.
+    fn init_repo(&self, local_config: &str) {
+        let out = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(self.cwd())
+            .output()
+            .expect("run git init");
+        assert!(out.status.success(), "git init failed: {out:?}");
+        self.write("cwd/.git/config", local_config);
     }
 }
 
-#[expect(unsafe_code, reason = "test-only env mutation, removed in W2.1 by the ADR-8 Env view")]
-fn set_env(key: &str, value: impl AsRef<std::ffi::OsStr>) {
-    // SAFETY: every test that reaches this helper is tagged `#[serial]`, so
-    // `serial_test` serialises them against one another and no other thread
-    // reads or writes the environment while this call runs.
-    unsafe { std::env::set_var(key, value) };
+fn load_ok(env: &Env) -> ConfigSnapshot {
+    load(env).expect("load the fixture configuration")
 }
 
-#[expect(unsafe_code, reason = "test-only env mutation, removed in W2.1 by the ADR-8 Env view")]
-fn unset_env(key: &str) {
-    // SAFETY: as in `set_env` -- `#[serial]` serialises every caller, so this
-    // is the only thread touching the environment for the duration.
-    unsafe { std::env::remove_var(key) };
-}
-
-fn setup(contents: &str) -> EnvGuard {
-    let tmp = TempDir::new().expect("tempdir");
-    let cfg = tmp.path().join("gitconfig");
-    std::fs::File::create(&cfg)
-        .expect("create gitconfig")
-        .write_all(contents.as_bytes())
-        .expect("write gitconfig");
-
-    let saved = vec![
-        ("GIT_CONFIG_NOSYSTEM", std::env::var_os("GIT_CONFIG_NOSYSTEM")),
-        ("GIT_CONFIG_GLOBAL", std::env::var_os("GIT_CONFIG_GLOBAL")),
-        ("SCAP_ROOT", std::env::var_os("SCAP_ROOT")),
-        ("HOME", std::env::var_os("HOME")),
-        ("XDG_CONFIG_HOME", std::env::var_os("XDG_CONFIG_HOME")),
-    ];
-
-    set_env("GIT_CONFIG_NOSYSTEM", "1");
-    set_env("GIT_CONFIG_GLOBAL", &cfg);
-    unset_env("SCAP_ROOT");
-    set_env("HOME", tmp.path());
-    set_env("XDG_CONFIG_HOME", tmp.path().join("xdg"));
-
-    EnvGuard { keys: saved, _tmp: tmp }
+/// Ask the real `git` the same question, through the same [`Env`].
+fn git_path_values(env: &Env, key: &str) -> Vec<PathBuf> {
+    let program = sources::resolve_git_program(env).expect("a real git on PATH");
+    let mut command = std::process::Command::new(program);
+    command.args(["config", "--path", "--get-all", key]);
+    git_backend::apply_env(&mut command, env);
+    let output = command.output().expect("run git config");
+    String::from_utf8(output.stdout)
+        .expect("utf-8 git output")
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect()
 }
 
 fn pb(s: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
+// -- source enumeration and precedence -----------------------------------
+
 #[test]
-#[serial]
-fn resolve_roots_uses_scap_root_env_when_set() {
-    let _g = setup("");
-    set_env("SCAP_ROOT", "/p/one:/p/two");
-    let got = resolve_roots(false).unwrap();
-    assert_eq!(got, vec![pb("/p/one"), pb("/p/two")]);
-    let got_all = resolve_roots(true).unwrap();
-    assert_eq!(got_all, vec![pb("/p/one"), pb("/p/two")]);
+fn load_reads_system_xdg_user_and_local_in_git_order() {
+    let f = Fixture::new();
+    let system = f.write("system/gitconfig", "[scap]\n\troot = /from-system\n");
+    f.write("home/.config/git/config", "[scap]\n\troot = /from-xdg\n");
+    f.write("home/.gitconfig", "[scap]\n\troot = /from-user\n");
+    f.init_repo("[scap]\n\troot = /from-local\n");
+
+    let env = Env { git_config_system: Some(system), ..f.env() };
+    let snapshot = load_ok(&env);
+
+    assert_eq!(
+        snapshot.roots(),
+        [pb("/from-system"), pb("/from-xdg"), pb("/from-user"), pb("/from-local")],
+        "sources must be read in git's own precedence order"
+    );
+    assert_eq!(snapshot.roots(), git_path_values(&env, "scap.root"));
 }
 
 #[test]
-#[serial]
-fn resolve_roots_reverses_multi_root_from_gitconfig() {
-    let _g = setup("[scap]\n\troot = /a\n\troot = /b\n\troot = /c\n");
-    let got = resolve_roots(false).unwrap();
-    assert_eq!(got, vec![pb("/c"), pb("/b"), pb("/a")]);
+fn git_config_global_replaces_both_xdg_and_user_files() {
+    let f = Fixture::new();
+    f.write("home/.config/git/config", "[scap]\n\troot = /from-xdg\n");
+    f.write("home/.gitconfig", "[scap]\n\troot = /from-user\n");
+    let global = f.write("global/gitconfig", "[scap]\n\troot = /from-global\n");
+
+    let env = Env { git_config_global: Some(global), ..f.env() };
+    let snapshot = load_ok(&env);
+
+    assert_eq!(snapshot.roots(), [pb("/from-global")]);
+    assert_eq!(snapshot.roots(), git_path_values(&env, "scap.root"));
 }
 
 #[test]
-#[serial]
+fn an_empty_git_config_global_suppresses_the_global_level() {
+    // An empty value is a real, unopenable path to git, not "unset": the
+    // XDG and user files stay suppressed rather than coming back.
+    let f = Fixture::new();
+    f.write("home/.config/git/config", "[scap]\n\troot = /from-xdg\n");
+    f.write("home/.gitconfig", "[scap]\n\troot = /from-user\n");
+
+    let env = Env { git_config_global: Some(PathBuf::new()), ..f.env() };
+
+    assert!(git_path_values(&env, "scap.root").is_empty(), "the oracle must see nothing");
+    assert!(load_ok(&env).roots().is_empty(), "and neither must scap");
+}
+
+#[test]
+fn one_global_file_reachable_by_two_paths_is_parsed_once() {
+    // `$XDG_CONFIG_HOME/git/config` is a symlink to `~/.gitconfig`, so both
+    // global-level candidates name the same file. Without the canonical-path
+    // dedup its single `scap.root` line would appear twice.
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\troot = /only-once\n");
+    std::fs::create_dir_all(f.path().join("home/.config/git")).expect("mkdir xdg");
+    std::os::unix::fs::symlink(
+        f.home().join(".gitconfig"),
+        f.path().join("home/.config/git/config"),
+    )
+    .expect("symlink xdg config at the user file");
+
+    let snapshot = load_ok(&f.env());
+
+    assert_eq!(snapshot.roots(), [pb("/only-once")]);
+}
+
+#[test]
+fn include_path_is_followed() {
+    let f = Fixture::new();
+    f.write("home/included.gitconfig", "[scap]\n\troot = /from-include\n");
+    f.write(
+        "home/.gitconfig",
+        "[scap]\n\troot = /from-user\n[include]\n\tpath = included.gitconfig\n",
+    );
+
+    let env = f.env();
+    let snapshot = load_ok(&env);
+
+    assert_eq!(snapshot.roots(), [pb("/from-user"), pb("/from-include")]);
+    assert_eq!(snapshot.roots(), git_path_values(&env, "scap.root"));
+}
+
+#[test]
+fn include_if_gitdir_condition_is_evaluated_against_the_discovered_repository() {
+    let f = Fixture::new();
+    f.init_repo("");
+    f.write("home/matching.gitconfig", "[scap]\n\troot = /matched\n");
+    f.write("home/other.gitconfig", "[scap]\n\troot = /not-matched\n");
+    let cwd = f.cwd();
+    f.write(
+        "home/.gitconfig",
+        &format!(
+            "[includeIf \"gitdir:{}/\"]\n\tpath = matching.gitconfig\n\
+             [includeIf \"gitdir:/definitely/elsewhere/\"]\n\tpath = other.gitconfig\n",
+            cwd.display()
+        ),
+    );
+
+    let snapshot = load_ok(&f.env());
+
+    assert_eq!(snapshot.roots(), [pb("/matched")]);
+}
+
+// -- `--path` interpolation ----------------------------------------------
+
+#[test]
+fn path_values_expand_a_leading_tilde_against_home() {
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\troot = ~/nested\n");
+
+    let env = f.env();
+    let snapshot = load_ok(&env);
+
+    assert_eq!(snapshot.roots(), [f.home().join("nested")]);
+    assert_eq!(snapshot.roots(), git_path_values(&env, "scap.root"));
+}
+
+#[test]
+fn path_values_expand_tilde_user_the_way_git_does() {
+    // `~root/` resolves through the password database on every unix, so the
+    // real `git` is the oracle rather than a hard-coded path.
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\troot = ~root/src\n");
+
+    let env = f.env();
+    let expected = git_path_values(&env, "scap.root");
+    assert!(!expected.is_empty(), "git must resolve ~root/ for this oracle to mean anything");
+
+    assert_eq!(load_ok(&env).roots(), expected);
+}
+
+#[test]
+fn quoted_and_continued_values_match_git() {
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\troot = \"/quoted path/one\"\n\troot = /two\\\n/three\n");
+
+    let env = f.env();
+    let expected = git_path_values(&env, "scap.root");
+
+    assert_eq!(load_ok(&env).roots(), expected);
+}
+
+// -- values ---------------------------------------------------------------
+
+#[test]
+fn user_is_read_and_trimmed() {
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\tuser = motemen\n");
+    assert_eq!(load_ok(&f.env()).user(), Some("motemen"));
+
+    let g = Fixture::new();
+    g.write("home/.gitconfig", "");
+    assert_eq!(load_ok(&g.env()).user(), None);
+}
+
+#[test]
+fn complete_user_accepts_every_git_bool_spelling_including_a_valueless_key() {
+    for (spelling, expected) in [
+        ("completeUser = true", true),
+        ("completeUser = yes", true),
+        ("completeUser = on", true),
+        ("completeUser = 1", true),
+        ("completeUser = false", false),
+        ("completeUser = no", false),
+        ("completeUser = off", false),
+        ("completeUser = 0", false),
+        // A valueless key is `true` -- what `git config --bool` prints.
+        ("completeUser", true),
+    ] {
+        let f = Fixture::new();
+        f.write("home/.gitconfig", &format!("[scap]\n\t{spelling}\n"));
+        assert_eq!(load_ok(&f.env()).complete_user(), expected, "spelling: {spelling}");
+    }
+
+    let unset = Fixture::new();
+    unset.write("home/.gitconfig", "");
+    assert!(!load_ok(&unset.env()).complete_user(), "an absent key is false");
+
+    // git exits fatally on a boolean it cannot parse. scap cannot exit over
+    // a key it merely happens to read, so it takes the conservative value --
+    // in both backends, which is what makes them interchangeable.
+    for invalid in ["one", "zero", "nil", "sure", "1 k", "0x"] {
+        let f = Fixture::new();
+        f.write("home/.gitconfig", &format!("[scap]\n\tcompleteUser = {invalid}\n"));
+        assert!(!load_ok(&f.env()).complete_user(), "in process: {invalid}");
+        let via_git = load_ok(&Env { scap_config_backend: Some("git".into()), ..f.env() });
+        assert!(!via_git.complete_user(), "via git: {invalid}");
+    }
+
+    // git reads the integer with `strtoimax` base 0 plus a `k`/`m`/`g` unit
+    // suffix, so these are true booleans to it and a plain decimal parse
+    // would wrongly call them invalid.
+    for spelling in ["0x1", "1k", "-2", "010", "+3", "1M", "1g"] {
+        let f = Fixture::new();
+        f.write("home/.gitconfig", &format!("[scap]\n\tcompleteUser = {spelling}\n"));
+        assert!(load_ok(&f.env()).complete_user(), "in process: {spelling}");
+        let via_git = load_ok(&Env { scap_config_backend: Some("git".into()), ..f.env() });
+        assert!(via_git.complete_user(), "via git: {spelling}");
+    }
+    for zero in ["0x0", "0k", "00"] {
+        let f = Fixture::new();
+        f.write("home/.gitconfig", &format!("[scap]\n\tcompleteUser = {zero}\n"));
+        assert!(!load_ok(&f.env()).complete_user(), "in process: {zero}");
+    }
+}
+
+#[test]
+fn boolean_of_separates_a_valueless_key_from_an_empty_one_and_takes_the_last() {
+    let f = Fixture::new();
+    f.write(
+        "home/.gitconfig",
+        "[scap]\n\tcompleteUser = true\n[other]\n\tflag = true\n\
+         [scap]\n\tcompleteUser = false\n\tlistCache\n\tuser = x\n\
+         [scap \"https://example.com/\"]\n\tcompleteUser = true\n",
+    );
+    let list = sources::enumerate(&f.env());
+    let file = parse(&list, &f.env()).expect("parse").expect("a file exists");
+
+    assert_eq!(
+        boolean_of(&file, "scap", "completeUser"),
+        Some(false),
+        "the last plain occurrence wins, and a subsection is not a plain key"
+    );
+    assert_eq!(boolean_of(&file, "scap", "listCache"), Some(true), "a valueless key is true");
+    assert_eq!(boolean_of(&file, "scap", "absent"), None);
+    assert_eq!(boolean_of(&file, "other", "flag"), Some(true), "the section name is a parameter");
+
+    let empty = Fixture::new();
+    empty.write("home/.gitconfig", "[scap]\n\tcompleteUser =\n");
+    let list = sources::enumerate(&empty.env());
+    let file = parse(&list, &empty.env()).expect("parse").expect("a file exists");
+    assert_eq!(
+        boolean_of(&file, "scap", "completeUser"),
+        Some(false),
+        "an empty value is false, unlike a valueless key"
+    );
+}
+
+#[test]
+fn list_exclude_and_list_cache_are_read_from_flat_keys() {
+    let f = Fixture::new();
+    f.write(
+        "home/.gitconfig",
+        "[scap]\n\tlistExclude = a/b\n\tlistExclude = c\n\tlistCache = true\n",
+    );
+
+    let snapshot = load_ok(&f.env());
+
+    assert_eq!(snapshot.list_exclude(), ["a/b".to_owned(), "c".to_owned()]);
+    assert!(snapshot.list_cache());
+}
+
+#[test]
+fn has_url_sections_and_url_scoped_roots_report_scap_subsections() {
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\troot = /plain\n");
+    let plain = load_ok(&f.env());
+    assert!(!plain.has_url_sections());
+    assert!(plain.url_scoped_roots().is_empty());
+
+    let g = Fixture::new();
+    g.write(
+        "home/.gitconfig",
+        "[scap]\n\troot = /plain\n\
+         [scap \"https://example.com/\"]\n\troot = /custom\n\
+         [scap \"https://other.example.com/\"]\n\troot = /other\n",
+    );
+    let scoped = load_ok(&g.env());
+    assert!(scoped.has_url_sections());
+    assert_eq!(scoped.url_scoped_roots(), [pb("/custom"), pb("/other")]);
+    assert_eq!(scoped.roots(), [pb("/plain")], "a subsection root is not a plain root");
+}
+
+#[test]
+fn backend_and_reason_describe_the_in_process_path() {
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\troot = /plain\n");
+    let plain = load_ok(&f.env());
+    assert_eq!(plain.backend(), Backend::InProcess);
+    assert_eq!(plain.reason(), Reason::InProcess);
+    assert_eq!(plain.backend().to_string(), "in_process");
+
+    let g = Fixture::new();
+    g.write("home/.gitconfig", "[scap \"https://example.com/\"]\n\troot = /custom\n");
+    let scoped = load_ok(&g.env());
+    assert_eq!(scoped.backend(), Backend::InProcess, "url sections alone keep the snapshot local");
+    assert_eq!(scoped.reason(), Reason::UrlSections);
+    assert_eq!(scoped.reason().to_string(), "url_sections");
+}
+
+// -- spawn triggers -------------------------------------------------------
+
+#[test]
+fn needs_git_backend_fires_once_per_trigger() {
+    let f = Fixture::new();
+    let base = f.env();
+
+    assert_eq!(needs_git_backend(&base, 0, false), None, "the common case stays in process");
+    assert_eq!(needs_git_backend(&base, 1, false), None, "exactly one system file is unambiguous");
+
+    let env = Env { scap_config_backend: Some("git".into()), ..base.clone() };
+    assert_eq!(needs_git_backend(&env, 0, false), Some(Reason::EnvOverride));
+
+    let env = Env { scap_config_backend: Some("gix".into()), ..base.clone() };
+    assert_eq!(needs_git_backend(&env, 0, false), None, "only `git` selects the A3 backend");
+
+    let env = Env { git_config_count: Some("1".into()), ..base.clone() };
+    assert_eq!(needs_git_backend(&env, 0, false), Some(Reason::GitConfigCount));
+
+    let env = Env { git_config_parameters: Some("'scap.root=/x'".into()), ..base.clone() };
+    assert_eq!(needs_git_backend(&env, 0, false), Some(Reason::GitConfigParameters));
+
+    let env = Env { git_config_count: Some("0".into()), ..base.clone() };
+    assert_eq!(needs_git_backend(&env, 0, false), None, "a count of zero adds no keys");
+
+    let env = Env { git_config_count: Some("".into()), ..base.clone() };
+    assert_eq!(
+        needs_git_backend(&env, 0, false),
+        None,
+        "git's strtoul reads an empty count as zero without an error"
+    );
+
+    for unparseable in ["abc", "-1"] {
+        let env = Env { git_config_count: Some(unparseable.into()), ..base.clone() };
+        assert_eq!(
+            needs_git_backend(&env, 0, false),
+            Some(Reason::GitConfigCount),
+            "git would die on {unparseable:?}, so git must be the one to say so"
+        );
+    }
+
+    assert_eq!(needs_git_backend(&base, 2, false), Some(Reason::SystemProbeAmbiguous));
+    assert_eq!(needs_git_backend(&base, 0, true), Some(Reason::IncludeifUnevaluated));
+}
+
+#[test]
+fn an_unevaluable_include_if_routes_the_snapshot_to_git() {
+    for condition in ["onbranch:main", "hasconfig:remote.*.url:https://example.com/**"] {
+        let f = Fixture::new();
+        f.write("home/extra.gitconfig", "[scap]\n\troot = /from-include\n");
+        f.write(
+            "home/.gitconfig",
+            &format!(
+                "[scap]\n\troot = /plain\n[includeIf \"{condition}\"]\n\tpath = extra.gitconfig\n"
+            ),
+        );
+
+        let snapshot = load_ok(&f.env());
+
+        assert_eq!(snapshot.backend(), Backend::Git, "condition: {condition}");
+        assert_eq!(snapshot.reason(), Reason::IncludeifUnevaluated);
+        assert_eq!(snapshot.roots(), [pb("/plain")], "git is the parser of record here");
+    }
+}
+
+#[test]
+fn an_ambiguous_system_probe_routes_the_snapshot_to_git() {
+    let f = Fixture::new();
+    let first = f.write("etc-a/gitconfig", "[scap]\n\troot = /from-a\n");
+    let second = f.write("etc-b/gitconfig", "[scap]\n\troot = /from-b\n");
+    f.write("home/.gitconfig", "[scap]\n\troot = /from-user\n");
+
+    let env = Env { system_probe_candidates: vec![first, second], ..f.env() };
+    let snapshot = load_ok(&env);
+
+    assert_eq!(snapshot.backend(), Backend::Git);
+    assert_eq!(snapshot.reason(), Reason::SystemProbeAmbiguous);
+    assert_eq!(snapshot.reason().to_string(), "system_probe_ambiguous");
+}
+
+#[test]
+fn a_trigger_without_git_on_path_is_fatal_rather_than_a_silent_fallback() {
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\troot = /plain\n");
+    std::fs::create_dir_all(f.path().join("empty-bin")).expect("mkdir empty-bin");
+
+    let env = Env {
+        scap_config_backend: Some("git".into()),
+        path: Some(f.path().join("empty-bin").into_os_string()),
+        ..f.env()
+    };
+
+    let err = load(&env).expect_err("no git on PATH must not fall back to the in-process snapshot");
+    assert!(
+        matches!(err, ConfigError::GitRequired { reason } if reason.contains("SCAP_CONFIG_BACKEND")),
+        "the error must name the trigger, got: {err}"
+    );
+}
+
+#[test]
+fn the_git_backend_reproduces_the_in_process_snapshot() {
+    let f = Fixture::new();
+    f.write(
+        "home/.gitconfig",
+        "[scap]\n\troot = /a\n\troot = ~/b\n\tuser = zchee\n\tcompleteUser\n\
+         \tlistExclude = x/y\n\tlistCache = yes\n\
+         [scap \"https://example.com/\"]\n\troot = /custom\n",
+    );
+
+    let in_process = load_ok(&f.env());
+    let via_git = load_ok(&Env { scap_config_backend: Some("git".into()), ..f.env() });
+
+    assert_eq!(via_git.backend(), Backend::Git);
+    assert_eq!(via_git.roots(), in_process.roots());
+    assert_eq!(via_git.url_scoped_roots(), in_process.url_scoped_roots());
+    assert_eq!(via_git.user(), in_process.user());
+    assert_eq!(via_git.complete_user(), in_process.complete_user());
+    assert_eq!(via_git.list_exclude(), in_process.list_exclude());
+    assert_eq!(via_git.list_cache(), in_process.list_cache());
+}
+
+// -- resolve_roots --------------------------------------------------------
+
+#[test]
+fn resolve_roots_reverses_multi_root_and_dedups() {
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\troot = /a\n\troot = /b\n\troot = /c\n\troot = /a\n");
+
+    let roots = load_ok(&f.env()).resolve_roots(false).expect("resolve");
+
+    assert_eq!(roots, [pb("/a"), pb("/c"), pb("/b")]);
+}
+
+#[test]
 fn resolve_roots_falls_back_to_home_scap() {
-    let g = setup("");
-    let expected = Path::new(&std::env::var_os("HOME").unwrap()).join("scap");
-    let got = resolve_roots(false).unwrap();
-    assert_eq!(got, vec![expected]);
-    drop(g);
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "");
+
+    let roots = load_ok(&f.env()).resolve_roots(false).expect("resolve");
+
+    assert_eq!(roots, [f.home().join("scap")]);
 }
 
 #[test]
-#[serial]
-fn resolve_roots_all_appends_urlmatch_roots() {
-    let _g =
-        setup("[scap]\n\troot = /default\n[scap \"https://example.com/\"]\n\troot = /custom\n");
-    let no_all = resolve_roots(false).unwrap();
-    assert_eq!(no_all, vec![pb("/default")]);
-    let all = resolve_roots(true).unwrap();
-    assert!(all.contains(&pb("/default")), "missing default in {all:?}");
-    assert!(all.contains(&pb("/custom")), "missing custom in {all:?}");
+fn resolve_roots_uses_scap_root_env_when_set() {
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\troot = /ignored\n");
+
+    let env = Env { scap_root: Some("/p/one:/p/two".into()), ..f.env() };
+    let snapshot = load_ok(&env);
+
+    assert_eq!(snapshot.resolve_roots(false).expect("resolve"), [pb("/p/one"), pb("/p/two")]);
+    assert_eq!(snapshot.resolve_roots(true).expect("resolve"), [pb("/p/one"), pb("/p/two")]);
 }
 
 #[test]
-#[serial]
-fn resolve_roots_dedups() {
-    let _g = setup("[scap]\n\troot = /same\n\troot = /same\n");
-    let got = resolve_roots(false).unwrap();
-    assert_eq!(got, vec![pb("/same")]);
+fn resolve_roots_all_appends_url_scoped_roots() {
+    let f = Fixture::new();
+    f.write(
+        "home/.gitconfig",
+        "[scap]\n\troot = /default\n[scap \"https://example.com/\"]\n\troot = /custom\n",
+    );
+    let snapshot = load_ok(&f.env());
+
+    assert_eq!(snapshot.resolve_roots(false).expect("resolve"), [pb("/default")]);
+    assert_eq!(snapshot.resolve_roots(true).expect("resolve"), [pb("/default"), pb("/custom")]);
+}
+
+// -- root_for_url ---------------------------------------------------------
+
+#[test]
+fn root_for_url_returns_the_last_plain_root_raw_when_no_url_section_exists() {
+    // ADR-8 rule (c): `git config --path --get-urlmatch` prints the last
+    // plain value through a symlinked component without resolving it, and
+    // ghq uses that output raw. Routing through `resolve_roots` would
+    // canonicalise `lnk` away.
+    let f = Fixture::new();
+    std::fs::create_dir_all(f.path().join("real/last")).expect("mkdir real/last");
+    std::os::unix::fs::symlink(f.path().join("real"), f.path().join("lnk")).expect("symlink lnk");
+    let via_link = f.path().join("lnk").join("last");
+    f.write(
+        "home/.gitconfig",
+        &format!("[scap]\n\troot = /first\n\troot = {}\n", via_link.display()),
+    );
+
+    let env = f.env();
+    let snapshot = load_ok(&env);
+    let url = "https://github.com/x/y";
+
+    assert_eq!(snapshot.root_for_url(url).expect("root_for_url"), via_link);
+    assert_ne!(
+        snapshot.resolve_roots(false).expect("resolve")[0],
+        via_link,
+        "the canonicalising path is what rule (c) must not take"
+    );
+
+    // The oracle: what git itself prints for the same question.
+    let program = sources::resolve_git_program(&env).expect("git");
+    let mut command = std::process::Command::new(program);
+    command.args(["config", "--path", "--get-urlmatch", "scap.root", url]);
+    git_backend::apply_env(&mut command, &env);
+    let output = command.output().expect("run git config --get-urlmatch");
+    assert!(output.status.success(), "urlmatch must succeed when scap.root is set");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        via_link.to_string_lossy(),
+        "rule (c) must byte-match git's own urlmatch fallback"
+    );
 }
 
 #[test]
-#[serial]
 fn root_for_url_uses_scap_root_env_first() {
-    let _g = setup("[scap]\n\troot = /default\n");
-    set_env("SCAP_ROOT", "/env-first:/env-second");
-    let got = root_for_url("https://github.com/foo/bar").unwrap();
-    assert_eq!(got, pb("/env-first"));
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "[scap]\n\troot = /default\n");
+
+    let env = Env { scap_root: Some("/env-first:/env-second".into()), ..f.env() };
+
+    assert_eq!(
+        load_ok(&env).root_for_url("https://github.com/foo/bar").expect("root"),
+        pb("/env-first")
+    );
 }
 
 #[test]
-#[serial]
-fn root_for_url_consults_urlmatch_first() {
-    let _g = setup(concat!(
-        "[scap]\n\troot = /default\n",
-        "[scap \"https://special.example.com/\"]\n\troot = /special\n",
-    ));
-    let special = root_for_url("https://special.example.com/foo/bar").unwrap();
-    assert_eq!(special, pb("/special"));
-    let other = root_for_url("https://other.example.com/foo/bar").unwrap();
-    assert_eq!(other, pb("/default"));
+fn root_for_url_skips_urlmatch_for_codecommit_inputs() {
+    // ADR-8 rule (b): a codecommit input skips urlmatch and then takes
+    // ghq's primary root, which is *canonicalised* -- rule (e), not the raw
+    // last plain value of rule (c). Two roots whose last entry traverses a
+    // symlink is what makes the two rules distinguishable.
+    let f = Fixture::new();
+    std::fs::create_dir_all(f.path().join("real/last")).expect("mkdir real/last");
+    std::os::unix::fs::symlink(f.path().join("real"), f.path().join("lnk")).expect("symlink lnk");
+    let via_link = f.path().join("lnk").join("last");
+    let resolved = std::fs::canonicalize(&via_link).expect("the symlink target exists");
+    assert_ne!(resolved, via_link, "the fixture must actually traverse a symlink");
+    f.write(
+        "home/.gitconfig",
+        &format!(
+            "[scap]\n\troot = /first\n\troot = {}\n\
+             [scap \"codecommit\"]\n\troot = /should-be-ignored\n",
+            via_link.display()
+        ),
+    );
+
+    let snapshot = load_ok(&f.env());
+
+    // The first spelling is what every call site passes: `from_input`
+    // normalises a codecommit target through `url::finalize_codecommit`
+    // into `codecommit://<region>/<owner>/<name>`, whose authority holds a
+    // `/` and which `is_codecommit_input` therefore rejects. The second is
+    // the raw reference a caller that has not normalised would hold. Both
+    // must take rule (b).
+    for url in ["codecommit://us-east-1/codecommit/my-repo", "codecommit::us-east-1://my-repo"] {
+        let got = snapshot.root_for_url(url).expect("root");
+        assert_eq!(got, resolved, "rule (b) must land on rule (e) for {url}");
+        assert_ne!(got, via_link, "rule (c)'s raw last value is not what ghq uses: {url}");
+        assert_eq!(got, snapshot.resolve_roots(false).expect("resolve")[0], "{url}");
+    }
+
+    // A non-codecommit target still takes rule (c), raw, so the two rules
+    // do not collapse into one behaviour.
+    assert_eq!(snapshot.root_for_url("https://github.com/x/y").expect("root"), via_link);
 }
 
 #[test]
-#[serial]
-fn root_for_url_skips_urlmatch_for_codecommit() {
-    let _g =
-        setup("[scap]\n\troot = /default\n[scap \"codecommit\"]\n\troot = /should-be-ignored\n");
-    let got = root_for_url("codecommit::us-east-1://my-repo").unwrap();
-    assert_eq!(got, pb("/default"));
+fn root_for_url_delegates_to_urlmatch_when_a_url_section_is_visible() {
+    let f = Fixture::new();
+    f.write(
+        "home/.gitconfig",
+        "[scap]\n\troot = /default\n\
+         [scap \"https://special.example.com/\"]\n\troot = /special\n",
+    );
+
+    let snapshot = load_ok(&f.env());
+
+    assert_eq!(
+        snapshot.root_for_url("https://special.example.com/foo/bar").expect("root"),
+        pb("/special")
+    );
+    assert_eq!(
+        snapshot.root_for_url("https://other.example.com/foo/bar").expect("root"),
+        pb("/default")
+    );
 }
 
 #[test]
-#[serial]
-fn scap_user_returns_value_when_set() {
-    let _g = setup("[scap]\n\tuser = motemen\n");
-    assert_eq!(scap_user().unwrap(), Some("motemen".to_owned()));
+fn root_for_url_falls_back_to_the_home_root_when_nothing_is_configured() {
+    let f = Fixture::new();
+    f.write("home/.gitconfig", "");
+
+    let snapshot = load_ok(&f.env());
+
+    assert_eq!(
+        snapshot.root_for_url("https://github.com/x/y").expect("root"),
+        f.home().join("scap")
+    );
+}
+
+// -- process-wide snapshot and helpers ------------------------------------
+
+#[test]
+fn snapshot_is_built_once_and_reused() {
+    let first = snapshot();
+    let second = snapshot();
+    assert!(std::ptr::eq(first, second), "the OnceLock must hand back one value");
+    assert!(matches!(first.backend(), Backend::InProcess | Backend::Git));
 }
 
 #[test]
-#[serial]
-fn scap_user_returns_none_when_unset() {
-    let _g = setup("");
-    assert_eq!(scap_user().unwrap(), None);
-}
-
-#[test]
-#[serial]
-fn scap_complete_user_parses_bool() {
-    let _g = setup("[scap]\n\tcompleteUser = true\n");
-    assert!(scap_complete_user().unwrap());
-}
-
-#[test]
-#[serial]
-fn scap_complete_user_defaults_false() {
-    let _g = setup("");
-    assert!(!scap_complete_user().unwrap());
+fn env_from_process_sees_the_default_system_probe_list() {
+    let env = Env::from_process();
+    assert_eq!(env.system_probe_candidates, sources::default_system_candidates());
 }
 
 #[test]
@@ -182,64 +715,22 @@ fn clean_path_normalizes_parent_and_current() {
 }
 
 #[test]
-#[serial]
-fn git_config_get_path_returns_the_single_value_for_a_key() {
-    let _g = setup("[scap]\n\troot = /p/one\n\tuser = zchee\n");
-
-    assert_eq!(git_config_get_path("scap.root").unwrap(), Some("/p/one".to_owned()));
-    assert_eq!(git_config_get_path("scap.user").unwrap(), Some("zchee".to_owned()));
+fn user_and_complete_user_read_the_process_snapshot() {
+    // The free functions are the command-facing API; they must agree with
+    // the snapshot they read.
+    assert_eq!(user().expect("user"), snapshot().user().map(str::to_owned));
+    assert_eq!(complete_user().expect("completeUser"), snapshot().complete_user());
 }
 
 #[test]
-#[serial]
-fn git_config_get_path_expands_a_leading_tilde_against_home() {
-    // `--path` is not decoration: it is what makes `~/src` in a gitconfig mean
-    // the same directory to scap as it does to git. `setup()` points HOME at
-    // the temp dir, so the expansion is checked against a known value.
-    let _g = setup("[scap]\n\troot = ~/nested\n");
-    let home = std::env::var("HOME").expect("HOME set by setup()");
+fn resolve_roots_and_root_for_url_read_the_process_snapshot() {
+    let from_module = resolve_roots(false).expect("resolve_roots");
+    let from_snapshot = snapshot().resolve_roots(false).expect("resolve");
+    assert_eq!(from_module, from_snapshot);
 
-    let got = git_config_get_path("scap.root").unwrap().expect("key is present");
-    assert_eq!(got, format!("{home}/nested"));
-}
-
-#[test]
-#[serial]
-fn git_config_get_path_returns_none_for_an_absent_key() {
-    let _g = setup("[scap]\n\troot = /p/one\n");
-
-    assert_eq!(git_config_get_path("scap.definitelyAbsent").unwrap(), None);
-}
-
-#[test]
-#[serial]
-fn git_config_get_all_path_returns_every_value_in_file_order() {
-    // File order, not the reversed order `resolve_roots` applies afterwards:
-    // the reversal is that caller's rule, not this accessor's.
-    let _g = setup("[scap]\n\troot = /a\n\troot = /b\n\troot = /c\n");
-
+    let url = "https://github.com/zchee/scap";
     assert_eq!(
-        git_config_get_all_path("scap.root").unwrap(),
-        vec!["/a".to_owned(), "/b".to_owned(), "/c".to_owned()]
+        root_for_url(url).expect("root_for_url"),
+        snapshot().root_for_url(url).expect("root")
     );
-}
-
-#[test]
-#[serial]
-fn git_config_get_all_path_expands_each_value_and_drops_blank_lines() {
-    let _g = setup("[scap]\n\troot = ~/one\n\troot = /two\n");
-    let home = std::env::var("HOME").expect("HOME set by setup()");
-
-    let got = git_config_get_all_path("scap.root").unwrap();
-
-    assert_eq!(got, vec![format!("{home}/one"), "/two".to_owned()]);
-    assert!(got.iter().all(|v| !v.is_empty()), "blank lines must be filtered out: {got:?}");
-}
-
-#[test]
-#[serial]
-fn git_config_get_all_path_returns_an_empty_vec_for_an_absent_key() {
-    let _g = setup("[scap]\n\troot = /a\n");
-
-    assert!(git_config_get_all_path("scap.definitelyAbsent").unwrap().is_empty());
 }

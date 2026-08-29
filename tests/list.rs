@@ -7,7 +7,6 @@ use std::path::Path;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
-use serial_test::serial;
 use tempfile::TempDir;
 
 fn isolated(cmd: &mut Command, home: &Path, root: &Path) {
@@ -18,7 +17,18 @@ fn isolated(cmd: &mut Command, home: &Path, root: &Path) {
     cmd.env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", &cfg)
         .env("SCAP_ROOT", root)
-        .env("HOME", home);
+        .env("HOME", home)
+        .env_remove("SCAP_CONFIG_BACKEND")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .env_remove("GIT_CONFIG_SYSTEM")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_CEILING_DIRECTORIES")
+        // Repository discovery reads the configuration of whatever
+        // repository contains the working directory, and the test runner's
+        // is the scap checkout itself. Pin it to the fixture.
+        .current_dir(home);
 }
 
 fn init_repo(root: &Path, rel: &str, bare: bool) {
@@ -93,7 +103,6 @@ fn init_repo_with_gitdir_marker(root: &Path, rel: &str) {
 }
 
 #[test]
-#[serial]
 fn list_empty_root_produces_no_output() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -103,7 +112,6 @@ fn list_empty_root_produces_no_output() {
 }
 
 #[test]
-#[serial]
 fn list_prints_relative_paths_sorted() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -115,7 +123,6 @@ fn list_prints_relative_paths_sorted() {
 }
 
 #[test]
-#[serial]
 #[ignore]
 fn list_direct_root_repo() {
     let home = TempDir::new().unwrap();
@@ -127,7 +134,6 @@ fn list_direct_root_repo() {
 }
 
 #[test]
-#[serial]
 fn list_prunes_nested_repos_below_repo_root() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -139,7 +145,6 @@ fn list_prunes_nested_repos_below_repo_root() {
 }
 
 #[test]
-#[serial]
 fn list_hidden_repo_path_is_not_filtered() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -150,7 +155,6 @@ fn list_hidden_repo_path_is_not_filtered() {
 }
 
 #[test]
-#[serial]
 fn list_ignores_gitignore_patterns_when_listing_repos() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -162,7 +166,6 @@ fn list_ignores_gitignore_patterns_when_listing_repos() {
 }
 
 #[test]
-#[serial]
 #[ignore]
 fn list_symlinked_repo_is_discovered_once() {
     let home = TempDir::new().unwrap();
@@ -180,7 +183,6 @@ fn list_symlinked_repo_is_discovered_once() {
 }
 
 #[test]
-#[serial]
 fn list_reports_dot_when_root_is_a_repo() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -191,7 +193,6 @@ fn list_reports_dot_when_root_is_a_repo() {
 }
 
 #[test]
-#[serial]
 fn list_prunes_direct_root_repo_contents() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -203,7 +204,6 @@ fn list_prunes_direct_root_repo_contents() {
 }
 
 #[test]
-#[serial]
 fn list_includes_hidden_and_ignored_repo_paths() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -216,7 +216,6 @@ fn list_includes_hidden_and_ignored_repo_paths() {
 
 #[test]
 #[cfg(unix)]
-#[serial]
 #[ignore]
 fn list_reports_real_and_symlinked_repos() {
     let home = TempDir::new().unwrap();
@@ -231,7 +230,6 @@ fn list_reports_real_and_symlinked_repos() {
 }
 
 #[test]
-#[serial]
 #[ignore]
 fn list_detects_git_file_repositories() {
     let home = TempDir::new().unwrap();
@@ -244,7 +242,6 @@ fn list_detects_git_file_repositories() {
 }
 
 #[test]
-#[serial]
 fn list_full_path_prints_absolute_paths() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -257,7 +254,6 @@ fn list_full_path_prints_absolute_paths() {
 }
 
 #[test]
-#[serial]
 fn list_unique_prints_shortest_unambiguous_subpath() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -269,7 +265,6 @@ fn list_unique_prints_shortest_unambiguous_subpath() {
 }
 
 #[test]
-#[serial]
 fn list_substring_query_filters() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -281,7 +276,6 @@ fn list_substring_query_filters() {
 }
 
 #[test]
-#[serial]
 fn list_exact_query_matches_subpath_only() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -296,7 +290,6 @@ fn list_exact_query_matches_subpath_only() {
 }
 
 #[test]
-#[serial]
 fn list_includes_bare_repo_in_default_output() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -311,7 +304,6 @@ fn list_includes_bare_repo_in_default_output() {
 }
 
 #[test]
-#[serial]
 fn list_bare_flag_does_not_filter_result_set() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -326,7 +318,6 @@ fn list_bare_flag_does_not_filter_result_set() {
 }
 
 #[test]
-#[serial]
 fn list_walks_multiple_roots() {
     let home = TempDir::new().unwrap();
     let r1 = TempDir::new().unwrap();
@@ -357,7 +348,6 @@ fn list_walks_multiple_roots() {
 }
 
 #[test]
-#[serial]
 fn list_prunes_subtrees_beneath_repositories() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -370,7 +360,6 @@ fn list_prunes_subtrees_beneath_repositories() {
 }
 
 #[test]
-#[serial]
 fn list_keeps_hidden_paths_in_results() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -382,7 +371,6 @@ fn list_keeps_hidden_paths_in_results() {
 }
 
 #[test]
-#[serial]
 fn list_does_not_filter_ignored_paths() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -395,7 +383,6 @@ fn list_does_not_filter_ignored_paths() {
 }
 
 #[test]
-#[serial]
 fn list_rejects_non_git_vcs() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -408,7 +395,6 @@ fn list_rejects_non_git_vcs() {
 }
 
 #[test]
-#[serial]
 fn list_prunes_nested_repositories_under_repo() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -420,7 +406,6 @@ fn list_prunes_nested_repositories_under_repo() {
 }
 
 #[test]
-#[serial]
 fn list_keeps_hidden_paths() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -431,7 +416,6 @@ fn list_keeps_hidden_paths() {
 }
 
 #[test]
-#[serial]
 fn list_does_not_filter_gitignored_paths() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -443,7 +427,6 @@ fn list_does_not_filter_gitignored_paths() {
 }
 
 #[test]
-#[serial]
 #[ignore]
 fn list_recognizes_gitfile_markers() {
     let home = TempDir::new().unwrap();
@@ -455,7 +438,6 @@ fn list_recognizes_gitfile_markers() {
 }
 
 #[test]
-#[serial]
 fn list_prunes_nested_repo_subtree() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -467,7 +449,6 @@ fn list_prunes_nested_repo_subtree() {
 }
 
 #[test]
-#[serial]
 fn list_includes_hidden_repo_paths() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -478,7 +459,6 @@ fn list_includes_hidden_repo_paths() {
 }
 
 #[test]
-#[serial]
 fn list_does_not_filter_by_parent_gitignore() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -490,7 +470,6 @@ fn list_does_not_filter_by_parent_gitignore() {
 }
 
 #[test]
-#[serial]
 #[ignore]
 fn list_detects_git_file_markers() {
     let home = TempDir::new().unwrap();
@@ -503,7 +482,6 @@ fn list_detects_git_file_markers() {
 
 #[cfg(unix)]
 #[test]
-#[serial]
 #[ignore]
 fn list_includes_symlinked_repo_path_when_present() {
     use std::os::unix::fs::symlink;
@@ -524,7 +502,6 @@ fn list_includes_symlinked_repo_path_when_present() {
 }
 
 #[test]
-#[serial]
 fn list_keeps_hidden_repositories_and_nonrepo_hidden_paths() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -536,7 +513,6 @@ fn list_keeps_hidden_repositories_and_nonrepo_hidden_paths() {
 }
 
 #[test]
-#[serial]
 fn list_does_not_filter_by_gitignore_contents() {
     let home = TempDir::new().unwrap();
     let root = TempDir::new().unwrap();
@@ -548,7 +524,6 @@ fn list_does_not_filter_by_gitignore_contents() {
 }
 
 #[test]
-#[serial]
 #[ignore]
 fn list_includes_symlinked_repository_target() {
     let home = TempDir::new().unwrap();
@@ -565,7 +540,6 @@ fn list_includes_symlinked_repository_target() {
 }
 
 #[test]
-#[serial]
 #[ignore]
 fn list_detects_gitdir_marker_repositories() {
     let home = TempDir::new().unwrap();

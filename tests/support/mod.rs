@@ -1,6 +1,11 @@
 //! Shared fixtures for the integration tests (plan §5, "Test support").
 //!
 //! Declared as `mod support;` by every integration test file that needs it.
+//!
+//! Each test binary compiles its own copy, so a helper only some binaries use
+//! is dead code in the others. `allow` rather than `expect`, because the
+//! binaries that do use it would then trip the unfulfilled-expectation lint.
+#![allow(dead_code)]
 
 use std::ffi::OsString;
 use std::fs;

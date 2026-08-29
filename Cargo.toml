@@ -18,6 +18,10 @@ jwalk = "0.9"
 anyhow = { version = "1", default-features = false }
 bstr = { version = "1", default-features = false }
 clap = { version = "4", features = ["derive"] }
+# `sha1` is not optional in practice: gix-hash refuses to build unless one of
+# `sha1`/`sha256` is selected, and both crates forward the flag to gix-ref.
+gix-config = { version = "0.60", features = ["sha1"] }
+gix-discover = { version = "0.55", features = ["sha1"] }
 gix-url = "0.37"
 thiserror = { version = "2", default-features = false }
 tracing = { version = "0.1", features = ["attributes"], default-features = false }
@@ -29,7 +33,6 @@ predicates = { version = "3", default-features = false }
 # Only the W1.3 differential test compiles ghq's codecommit pattern; the crate
 # itself ships no runtime regex engine.
 regex = "1"
-serial_test = { version = "4", default-features = false }
 tempfile = { version = "3", default-features = false }
 # Adds `tracing/std` (release build does not request it, so this stays
 # test-only) for `tracing::subscriber::with_default`, used by

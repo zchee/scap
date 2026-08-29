@@ -50,6 +50,11 @@ scap aims for byte-for-byte parity with ghq 1.8.0 within the git subset. Intenti
 | Atomic clone via temp-dir + rename | Prevents half-cloned state after Ctrl-C. ghq's clone is not atomic. (Plan §4 Scenario A) |
 | Per-target lock + exit 75 on concurrent clone | Prevents two scap processes from corrupting the same repo. ghq does not lock. (Plan §4 Scenario B) |
 | `SCAP_LOOK` env (replaces ghq's `GHQ_LOOK`) | Clean branding; no fallback. Users with existing ghq shell hooks must update. |
+| `SCAP_CONFIG_BACKEND=git` env | Forces the whole configuration through one `git config --list` subprocess. ghq always spawns `git config`; scap parses the gitconfig in process by default, and this is the escape hatch when you want git to be the parser of record. (ADR-8/ADR-13) |
+| Gitconfig read in process; `git` spawned only on explicit triggers | The system file is chosen by probing `/etc/gitconfig`, `/usr/local/etc/gitconfig`, `/opt/homebrew/etc/gitconfig` and `/opt/local/etc/gitconfig` unless `GIT_CONFIG_SYSTEM` names one. `GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS`, an `includeIf` with an `onbranch:`/`hasconfig:` condition, or more than one probe match route the whole snapshot to the `git config --list` backend instead of diverging silently; if no `git` is reachable then, scap exits 1 naming the trigger rather than falling back. (ADR-8/ADR-13) |
+| An invalid `scap.completeUser` / `scap.listCache` boolean reads as false | git accepts only `yes`/`on`/`true`, `no`/`off`/`false`, an integer, or the empty value, and exits fatally on anything else. scap cannot exit over a key it merely happens to read, so an unparsable value takes the conservative value in both backends. (ADR-8) |
+| A `scap.root` value scap cannot interpolate keeps its raw spelling | `git config --path` expands `%(prefix)/` against git's own installation directory, which scap does not have. `~/` and `~user/` are expanded exactly as git expands them. (ADR-8) |
+| `GIT_CEILING_DIRECTORIES` written through a symlink is not honoured | Repository discovery matches ceiling directories against the symlink-resolved ancestor chain it walks; git matches the literal spelling. Give ceilings in their physical spelling. (ADR-8, `gix-discover`) |
 
 See `.omc/plans/2026-05-23-ghq-port-rust.md` for full ADRs and design rationale.
 
