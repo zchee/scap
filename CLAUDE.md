@@ -16,6 +16,8 @@ Mirror ghq's user-facing surface unless there's a concrete reason to diverge. Be
 
 If you're about to introduce a command, flag, or config key that doesn't exist in ghq, surface that divergence in the PR description rather than silently inventing surface area.
 
+Divergences introduced by the optimisation plan are registered in one place: ADR-13 in `docs/plans/2026-08-28-theoretical-limit-optimization.md`, mirrored into the README "Compatibility with ghq" table and the CHANGELOG. The four that shipped in 0.1.0 — the git-only subset, the atomic clone, the per-target lock and `SCAP_LOOK` — are listed in that release's own CHANGELOG section instead. Add the row when the surface ships.
+
 ## Toolchain
 
 This project targets **nightly Rust**. `rust-toolchain.toml` pins the channel to `nightly` with `rustfmt` and `clippy` components, so plain `cargo build` / `cargo test` / `cargo fmt` / `cargo clippy` use the pinned nightly toolchain automatically — do not pin a different toolchain. `rustfmt.toml` depends on nightly-only options (`group_imports`, `imports_granularity`, `normalize_comments`, `format_code_in_doc_comments`, `error_on_line_overflow`, `error_on_unformatted`), so formatting is not reproducible on stable. Nightly formatting behaviour can shift between dates; if `cargo fmt --check` starts failing without a source change, suspect a toolchain bump before the code.
