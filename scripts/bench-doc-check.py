@@ -28,7 +28,11 @@ it checked, what it could not classify, and what a human must rule on. A guard
 that silently passed what it did not understand would be the failure mode this
 project has already paid for.
 
-Exit status is 0 unless --strict is given, in which case any finding exits 1.
+Exit status is non-zero when any guard reports a finding, unless --lenient
+is given. `recompute` grades a match by the precision it was made at: a
+figure printed to fewer than --min-decimals places is reported as checked at
+low precision rather than counted as reproduced, and every reproduced figure
+carries the number of distinct computations that reach it.
 """
 
 from __future__ import annotations
@@ -517,25 +521,56 @@ def add_pooled_rows(rows: list[Row]) -> list[Row]:
     return rows + pooled
 
 
-def derive(rows: list[Row]) -> dict[str, list[str]]:
-    """Every value a figure in the document could legitimately be.
+#: A key into the derived-value table: (decimal places, printed form).
+Key = tuple[int, str]
 
-    Raw statistics, then within-group pairwise ratios, percentage forms,
-    differences and percentage changes. Each is filed under its own printed
-    form at one through four decimal places, together with the computation
-    that produced it, so a match can be read as provenance rather than taken
-    on trust: a value reproduced by the wrong computation is still a defect,
-    and only naming the computation makes that visible.
+
+def _putter(table: dict[Key, list[str]], precisions: list[int]):
+    """Build the `put` used by derive/derive_metadata.
+
+    Each derived value is filed ONLY at the decimal places the document
+    actually prints, and the key carries that precision.
+
+    Until W5.4 every value was filed at a fixed 0..4 fan-out under a bare
+    string key. The cost was not really the table's size -- measured over the
+    closeout's seven run groups it held 55,856 distinct keys, from 116,860
+    filed entries, against 54,102 for the four precisions that document
+    actually prints -- but what a match at low precision was then allowed to
+    mean. On that same corpus a random millisecond value in the 0..300 range
+    lands on some key 64% of the time when printed to one decimal place and
+    20% at two, against 3.6% at three and 0.5% at four (400,000 samples per
+    precision; smaller samples put the last figure anywhere from 0.4 to 0.5,
+    which is why it is quoted rounded). Reporting the first two as
+    "reproduced from the run JSON" said very little. Keying by precision also
+    means a three-decimal figure can never be satisfied by a value that was
+    only ever checked at one.
     """
-    table: dict[str, list[str]] = {}
 
     def put(value: float, how: str) -> None:
         if not math.isfinite(value):
             return
-        for dp in range(5):
-            table.setdefault(f"{value:.{dp}f}", []).append(how)
+        for dp in precisions:
+            table.setdefault((dp, f"{value:.{dp}f}"), []).append(how)
             if abs(value) >= 1000:
-                table.setdefault(f"{value:,.{dp}f}", []).append(how)
+                table.setdefault((dp, f"{value:,.{dp}f}"), []).append(how)
+
+    return put
+
+
+def derive(rows: list[Row], precisions: list[int]) -> dict[Key, list[str]]:
+    """Every value a figure in the document could legitimately be.
+
+    Raw statistics, then within-group pairwise ratios, percentage forms,
+    differences and percentage changes. Each is filed under its printed form
+    at each precision the document uses, together with the computation that
+    produced it, so a match can be read as provenance rather than taken on
+    trust: a value reproduced by the wrong computation is still a defect, and
+    only naming the computation makes that visible. How many computations
+    reach the same printed form is itself reported, because a figure
+    "reproduced" by hundreds of them has not been pinned to any of them.
+    """
+    table: dict[Key, list[str]] = {}
+    put = _putter(table, precisions)
 
     for r in rows:
         for stat, v in r.stats.items():
@@ -582,28 +617,57 @@ def derive(rows: list[Row]) -> dict[str, list[str]]:
 
 
 def derive_metadata(
-    meta: list[tuple[str, dict[str, float]]], table: dict[str, list[str]]
+    meta: list[tuple[str, dict[str, float]]],
+    table: dict[Key, list[str]],
+    precisions: list[int],
 ) -> None:
     """Fold every metadata figure into the same lookup table."""
-
-    def put(value: float, how: str) -> None:
-        if not math.isfinite(value):
-            return
-        for dp in range(5):
-            table.setdefault(f"{value:.{dp}f}", []).append(how)
-            if abs(value) >= 1000:
-                table.setdefault(f"{value:,.{dp}f}", []).append(how)
+    put = _putter(table, precisions)
 
     for group, vals in meta:
         for key, v in vals.items():
             put(v, f"{group}/metadata.{key}")
 
 
-# A figure is a decimal number, optionally with thousands separators. Dates,
-# ISO timestamps, run-directory names, section numbers and file:line
-# references are excluded by the guards below rather than by the pattern,
-# because each needs a different test.
-_NUM = re.compile(r"(?<![\w.:-])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?![\w:-])")
+# A figure is a decimal number, optionally signed and optionally with
+# thousands separators. Dates, ISO timestamps, run-directory names, section
+# numbers and file:line references are excluded by the guards below rather
+# than by the pattern, because each needs a different test.
+#
+# The sign is captured rather than excluded. Until W5.4 the leading `-` sat
+# inside the lookbehind, so a negative figure did not match at all and every
+# delta, regression margin and below-baseline difference in a document went
+# unchecked -- the guard silently had nothing to say about exactly the
+# numbers a performance record argues over.
+#
+# Both ASCII HYPHEN-MINUS and U+2212 MINUS SIGN count as a sign, because
+# these documents use the typographic one: `2026-08-29-phase-2b.md` writes
+# nine three-decimal deltas as `−0.180`, and the closeout writes `−699,808 B,
+# −27.8 %`. Accepting only the ASCII form left exactly the figures a
+# performance argument turns on unchecked.
+#
+# U+2013 EN DASH is deliberately NOT a sign. These documents use it for
+# ranges -- `IQR 2.123–2.246`, `19–23 %`, `0–300` -- so reading it as a sign
+# would turn every range's upper bound into a spurious negative figure that
+# no computation could reproduce, and bury the real findings under them.
+#
+# What the lookbehind still excludes, and what it does not:
+#   - `AC-3`, `phase-4b`, `W5.4`: the sign is preceded by a word character,
+#     and the bare digit after it is preceded by the sign. Nothing matches.
+#   - `5.1-5.3`: the leading `5.1` cannot match, because the character after
+#     it is a sign, so the match backtracks to a bare `5` -- which the
+#     one-decimal floor in collect_figures then drops. Excluded in effect,
+#     but by the floor rather than by the pattern.
+#   - A U+2212 used as a BINARY minus is spaced away from its right operand
+#     in these documents (`8.183 − 6.523 = 1.66`, phase-4b.md:304), and the
+#     sign group must be followed immediately by a digit. The match therefore
+#     starts at the digit, where the lookbehind sees whitespace, and all
+#     three figures are read as positive -- which is what they are. The
+#     unspaced form `8.183−6.523` would instead degrade to a bare `8` that
+#     the floor drops; it does not occur in these documents.
+_NUM = re.compile(
+    r"(?<![\w.:\-\u2212])([-\u2212]?)(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?![\w:\-\u2212])"
+)
 _DATEISH = re.compile(r"\d{4}-\d{2}-\d{2}|\d{8}T\d{6}Z|§\s*\d|AC-\d|D-\d|W\d|ADR-\d")
 
 
@@ -612,35 +676,57 @@ class Figure:
     text: str
     line_no: int
     context: str
+    decimals: int = 0
     how: list[str] = field(default_factory=list)
 
 
 def collect_figures(path: Path, min_decimals: int) -> list[Figure]:
     """Every numeric literal in the prose that a run JSON could reproduce.
 
-    Integers are skipped by default: counts such as 845 repositories or 30
-    runs are not derived from timing JSON, and including them would bury the
-    timing figures this guard exists to check under matches that mean nothing.
+    Integers are skipped: counts such as 845 repositories or 30 runs are not
+    derived from timing JSON, and including them would bury the timing
+    figures this guard exists to check under matches that mean nothing.
+
+    Args:
+        path: The document to scan.
+        min_decimals: Skip figures printed with fewer decimal places. The
+            recompute command passes its own floor here -- 1, or lower if the
+            caller asked for lower -- and grades by precision afterwards, so
+            that a low-precision figure is reported rather than dropped
+            unmentioned.
     """
     figures: list[Figure] = []
     for n, line in iter_prose(path):
         if _DATEISH.search(line) and min_decimals == 0:
             continue
         for m in _NUM.finditer(line):
-            decimals = len(m.group(2) or "")
+            decimals = len(m.group(3) or "")
             if decimals < min_decimals:
                 continue
-            span = m.group(0)
+            # Normalise U+2212 to ASCII before the figure is carried any
+            # further: the derived-value table is keyed by Python's own
+            # `format`, which emits the ASCII sign, so a typographic minus
+            # would never find its computation however correct the figure.
+            span = m.group(0).replace("−", "-")
             before = line[max(0, m.start() - 30) : m.start()]
             if re.search(r"(\.rs|\.sh|\.py|\.md):$", before):
                 continue
-            figures.append(Figure(span, n, line.strip()[:150]))
+            figures.append(Figure(span, n, line.strip()[:150], decimals))
     return figures
 
 
-def match_figures(figures: list[Figure], table: dict[str, list[str]]) -> None:
+def match_figures(figures: list[Figure], table: dict[Key, list[str]]) -> None:
+    """Attach every computation that reproduces each figure AT ITS OWN precision.
+
+    Duplicates are collapsed so that the count of computations reported
+    beside a figure is a count of distinct provenances, not of table entries.
+    """
     for f in figures:
-        f.how = table.get(f.text, []) or table.get(f.text.replace(",", ""), [])
+        hows = table.get((f.decimals, f.text)) or table.get(
+            (f.decimals, f.text.replace(",", "")), []
+        )
+        seen: set[str] = set()
+        f.how = [h for h in hows if not (h in seen or seen.add(h))]
 
 
 # ---------------------------------------------------------------------------
@@ -688,32 +774,74 @@ def cmd_literals(args: argparse.Namespace) -> int:
     return 1 if missing else 0
 
 
+#: The lowest precision at which a figure is looked at all. Below this a
+#: figure is an integer -- a count, a run number, a byte size -- and not a
+#: timing statistic this guard can speak to.
+_FIGURE_FLOOR = 1
+
+
 def cmd_recompute(args: argparse.Namespace) -> int:
+    """Reproduce each figure from the run JSON, honestly graded by precision.
+
+    A match is only as strong as the precision it was made at. Matching a
+    figure printed to one decimal place against a table of hundreds of
+    thousands of derived values is close to free, so such a figure is
+    reported as CHECKED AT LOW PRECISION and is deliberately not counted as
+    reproduced. Only figures at --min-decimals or better earn that word, and
+    each carries the number of distinct computations that reach it, because a
+    figure reproduced by two hundred of them has been pinned to none.
+    """
+    # Collect below --min-decimals so a low-precision figure is reported
+    # rather than dropped unmentioned -- but never above the caller's own
+    # floor, so `--min-decimals 0` still means "integers too", as it did
+    # before the default moved to 3.
+    floor = min(_FIGURE_FLOOR, args.min_decimals)
+    figures = collect_figures(args.doc, floor)
+    precisions = sorted({f.decimals for f in figures})
     rows = add_pooled_rows(load_rows(args.runs))
     meta = load_metadata(args.runs)
-    table = derive(rows)
-    derive_metadata(meta, table)
-    figures = collect_figures(args.doc, args.min_decimals)
+    table = derive(rows, precisions)
+    derive_metadata(meta, table, precisions)
     match_figures(figures, table)
-    matched = [f for f in figures if f.how]
+
+    strong = [f for f in figures if f.decimals >= args.min_decimals]
+    weak = [f for f in figures if f.decimals < args.min_decimals]
+    reproduced = [f for f in strong if f.how]
+    low_precision = [f for f in weak if f.how]
     unmatched = [f for f in figures if not f.how]
+
     print(f"recompute: {args.doc}")
     print(
         f"  run directories: {len(args.runs)}   rows loaded: {len(rows)}"
         f"   metadata files: {len(meta)}"
     )
-    print(f"  figures checked (>= {args.min_decimals} decimal places): {len(figures)}")
     print(
-        f"  reproduced from run JSON: {len(matched)}   NOT reproduced: {len(unmatched)}"
+        f"  derived-value table: {len(table)} keys at precisions "
+        f"{precisions or '(none)'}"
     )
-    if unmatched:
-        print("  NOT reproduced - each needs a human ruling:")
-        for f in unmatched:
-            print(f"    line {f.line_no}: {f.text}")
-            print(f"      {f.context}")
-    if args.show_provenance:
-        print("  provenance of every reproduced figure:")
-        for f in matched:
+    print(
+        f"  figures found (>= {floor} decimal place): {len(figures)}"
+        f"   of which >= {args.min_decimals} decimals: {len(strong)}"
+    )
+    print(
+        f"  reproduced from run JSON: {len(reproduced)}"
+        f"   checked at low precision: {len(low_precision)}"
+        f"   NOT reproduced: {len(unmatched)}"
+    )
+    if reproduced:
+        collisions = [len(f.how) for f in reproduced]
+        ambiguous = sum(1 for c in collisions if c > 1)
+        print(
+            f"  colliding computations per reproduced figure: "
+            f"min {min(collisions)}, median {sorted(collisions)[len(collisions) // 2]}, "
+            f"max {max(collisions)}; {ambiguous} figure(s) reproduced by more than one"
+        )
+    if low_precision:
+        print(
+            f"  CHECKED AT LOW PRECISION (< {args.min_decimals} decimals; a match "
+            "at this precision is weak evidence, not reproduction):"
+        )
+        for f in low_precision:
             print(
                 f"    line {f.line_no}: {f.text} <- {f.how[0]}"
                 + (
@@ -722,6 +850,17 @@ def cmd_recompute(args: argparse.Namespace) -> int:
                     else ""
                 )
             )
+    if unmatched:
+        print("  NOT reproduced - each needs a human ruling:")
+        for f in unmatched:
+            print(f"    line {f.line_no}: {f.text}")
+            print(f"      {f.context}")
+    if args.show_provenance:
+        print("  provenance of every reproduced figure:")
+        for f in reproduced:
+            print(f"    line {f.line_no}: {f.text} <- {len(f.how)} computation(s)")
+            for how in f.how:
+                print(f"        {how}")
     return 1 if unmatched else 0
 
 
@@ -740,7 +879,18 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument(
-        "--strict", action="store_true", help="exit 1 when any guard reports a finding"
+        "--lenient",
+        action="store_true",
+        help=(
+            "exit 0 even when a guard reports a finding. The default is to "
+            "exit non-zero: a gate whose findings do not change its exit "
+            "status is a gate a caller can pass without reading."
+        ),
+    )
+    p.add_argument(
+        "--strict",
+        action="store_true",
+        help=argparse.SUPPRESS,  # now the default; accepted so old callers still work
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -763,9 +913,10 @@ def build_parser() -> argparse.ArgumentParser:
     rec.add_argument(
         "--min-decimals",
         type=int,
-        default=1,
-        help="skip figures with fewer decimal places (default 1: "
-        "integers are counts, not timing statistics)",
+        default=3,
+        help="the precision at which a match counts as reproduction "
+        "(default 3). Figures printed with fewer decimals are still "
+        "checked and reported, as 'checked at low precision'.",
     )
     rec.add_argument("--show-provenance", action="store_true")
     rec.set_defaults(func=cmd_recompute)
@@ -774,7 +925,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_doc(everything)
     everything.add_argument("runs", type=Path, nargs="*", default=[])
     everything.add_argument("--repo", type=Path, default=Path.cwd())
-    everything.add_argument("--min-decimals", type=int, default=1)
+    everything.add_argument("--min-decimals", type=int, default=3)
     everything.add_argument("--show-found", action="store_true")
     everything.add_argument("--show-provenance", action="store_true")
     everything.set_defaults(func=cmd_all)
@@ -782,9 +933,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the requested guard.
+
+    Returns:
+        The guard's own status, or 0 when --lenient was given. Reporting a
+        finding and then exiting 0 -- what --strict had to be asked for until
+        W5.4 -- makes a guard invisible to any caller that only reads the
+        exit status, which is every caller in a shell gate.
+    """
     args = build_parser().parse_args(argv)
     rc = args.func(args)
-    return rc if args.strict else 0
+    return 0 if args.lenient else rc
 
 
 if __name__ == "__main__":
