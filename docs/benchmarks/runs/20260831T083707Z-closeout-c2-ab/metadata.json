@@ -1,0 +1,95 @@
+{
+  "git_head": "46b3d59046bddd4a5c8b8477308c6ffea0ff6a82",
+  "rustc": "rustc 1.100.0-nightly (17fd5b8a3 2026-08-28)",
+  "hyperfine": "hyperfine 1.20.0",
+  "load_avg": {
+    "start": "{ 2.57 3.57 6.26 }",
+    "end": "{ 3.84 3.69 6.12 }"
+  },
+  "xprotectd_cpu_pct": {
+    "start": 1.80,
+    "end": 27.30
+  },
+  "cpu_idle_pct": {
+    "start": 92.42,
+    "end": 92.57
+  },
+  "top_proc_cpu_pct": {
+    "start": 6.0,
+    "end": 5.6
+  },
+  "gate": {
+    "deviation": "D-1: contention measured directly; load average recorded, not gated",
+    "idle_min_pct": 85.0,
+    "top_proc_max_pct": 15.0
+  },
+  "closing_gate": {
+    "checked": true,
+    "passed": true,
+    "idle_pct": 92.57,
+    "top_proc_cpu_pct": 5.6,
+    "idle_min_pct": 85.0,
+    "top_proc_max_pct": 15.0,
+    "sampling": "median of 3 top -l 2 samples 5 s apart, D-1a exclusions",
+    "failures": [],
+    "rule": "the closing sample is held to the same idle/busiest-process constants as the start gate; a failing group is DISCARDED - its rows, metadata and summary are kept and a DISCARDED marker is written, and the run exits 4 - so a discarded window is disclosed rather than dropped. SCAP_BENCH_FORCE=1 records the close without gating it, as it does the start."
+  },
+  "os": {
+    "name": "macOS",
+    "version": "27.0",
+    "build": "26A5421a"
+  },
+  "cpu_brand": "Apple M3 Max",
+  "rustflags": "-C target-cpu=apple-m3 -C target-feature=+neon -C opt-level=3 -C codegen-units=1 -C force-frame-pointers=on -C embed-bitcode=yes -Z dylib-lto -Z mir-opt-level=4 -Z inline-mir=yes -C llvm-args=-unroll-threshold=500 -C llvm-args=-enable-dfa-jump-thread -C link-arg=-Wl,-dead_strip",
+  "rustflags_frozen": "-C target-cpu=apple-m3 -C target-feature=+neon -C opt-level=3 -C codegen-units=1 -C force-frame-pointers=on -C embed-bitcode=yes -Z dylib-lto -Z mir-opt-level=4 -Z inline-mir=yes -C llvm-args=-unroll-threshold=500 -C llvm-args=-enable-dfa-jump-thread -C link-arg=-Wl,-dead_strip",
+  "rustflags_match": true,
+  "allow_flags": false,
+  "binary": "/Users/zchee/rust/src/github.com/zchee/scap/target/release/scap",
+  "binary_size_bytes": 1818048,
+  "binary_sha256": "92d6600442135dafd7b7fca20a8b7eedeea0ecf7bc9d82096cccf7a114a60c6b",
+  "runs": 30,
+  "warmup": 5,
+  "forced": false,
+  "foreign_hyperfine": {
+    "out_dir": "/Users/zchee/rust/src/github.com/zchee/scap/docs/benchmarks/runs/20260831T083707Z-closeout-c2-ab",
+    "scans": 17,
+    "detected": [],
+    "rule": "any hyperfine whose --export-json is outside out_dir is foreign; a detection aborts the run with exit 3 and writes OUT/CONTAMINATED, so a completed metadata.json always reports an empty list"
+  },
+  "corpus_inventory": [
+    {
+      "corpus": "a",
+      "root": "/Users/zchee/src",
+      "exclude": null,
+      "measured": {
+        "repos": 845,
+        "dirs_read": 16933,
+        "excluded": 0
+      },
+      "frozen_2026_08_28": {
+        "dirs_read": 17771,
+        "repos": 841,
+        "source": "W0.2 spike counters (ledger #2)"
+      },
+      "repos_drift": 4,
+      "note": "dirs_read is not comparable with the frozen figure across walkers; repos_drift is the drift signal"
+    },
+    {
+      "corpus": "b",
+      "root": "/Users/zchee/go/src",
+      "exclude": null,
+      "measured": {
+        "repos": 981,
+        "dirs_read": 2608,
+        "excluded": 0
+      },
+      "frozen_2026_08_28": {
+        "dirs_read": 3589,
+        "repos": 981,
+        "source": "W0.2 spike counters (ledger #2)"
+      },
+      "repos_drift": 0,
+      "note": "dirs_read is not comparable with the frozen figure across walkers; repos_drift is the drift signal"
+    }
+  ]
+}
