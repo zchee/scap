@@ -65,12 +65,12 @@ fn from_input_corpus() -> usize {
 
 /// The codecommit branch, measured through its only public caller.
 ///
-/// `scap::url::is_codecommit_input` -- the matcher that decides this
-/// dispatch, and that ADR-13 changed to ghq's `[^]]+` user class -- is
-/// `pub(crate)`, so a `benches/` target cannot call it and cannot measure
-/// the spellings it *rejects* in isolation: from `from_input`, a rejected
-/// spelling either fails to parse or, for a region-absent ref, resolves its
-/// region by spawning `aws`, neither of which belongs in a benchmark.
+/// `scap::url::is_codecommit_input` -- the predicate of the matcher that
+/// decides this dispatch, and that ADR-13 changed to ghq's `[^]]+` user
+/// class -- is `pub(crate)`, so a `benches/` target cannot call it and cannot
+/// measure the spellings it *rejects* in isolation: from `from_input`, a
+/// rejected spelling takes the ordinary URL path instead, which
+/// `from_input_corpus` above already measures.
 ///
 /// What is measured is the accepted side, which is the side that runs on a
 /// real `scap get`: region-explicit with no profile, with a profile, and

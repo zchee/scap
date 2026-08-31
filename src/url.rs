@@ -44,8 +44,8 @@ pub fn from_input(
     }
     let original_input = input.to_owned();
 
-    if let Some((scheme, region, user, repo)) = parse_codecommit(input) {
-        return finalize_codecommit(&original_input, scheme, region, user, repo);
+    if let Some(codecommit) = parse_codecommit(input) {
+        return finalize_codecommit(&original_input, codecommit);
     }
 
     let normalized = normalize_to_parseable(input)?;
@@ -258,86 +258,92 @@ fn build_github_repo(original: &str, owner: &str, name: &str) -> Repo {
     }
 }
 
-/// Reports whether `input` is a CodeCommit-style URL, using ghq's pattern
-/// (url.go:25):
+/// The capture groups of ghq's CodeCommit pattern, borrowed from the input.
+///
+/// The numbering is ghq's own (url.go:25, four groups): 1 is the literal
+/// scheme `codecommit` and carries nothing, 2 is `region`, 3 is `user` (the
+/// optional `<profile>@`) and 4 is `name`. The translation of that pattern in
+/// `src/url_tests.rs` keeps groups 1 to 3 and leaves the name uncaptured, so a
+/// `caps.get(2)` there is the region, not the name.
+struct CodecommitRef<'a> {
+    region: Option<&'a str>,
+    user: Option<&'a str>,
+    name: &'a str,
+}
+
+/// Matches `input` against ghq's CodeCommit pattern (url.go:25):
 ///
 /// ```text
 /// ^(codecommit):(?::([a-z][a-z0-9-]+):)?//(?:([^]]+)@)?([\w\.-]+)$
 /// ```
 ///
-/// with Go's ASCII `\w` (`[A-Za-z0-9_]`). Hand-written so the crate carries no
-/// runtime regex engine; `src/url_tests.rs` holds a differential test against
-/// that pattern compiled with the `regex` dev-dependency.
-pub(crate) fn is_codecommit_input(input: &str) -> bool {
-    let Some(rest) = input.strip_prefix("codecommit:") else {
-        return false;
-    };
+/// with Go's ASCII `\w` (`[A-Za-z0-9_]`), returning its capture groups, or
+/// `None` for an input the pattern rejects. Hand-written so the crate carries
+/// no runtime regex engine; `src/url_tests.rs` holds a differential test
+/// against that pattern compiled with the `regex` dev-dependency.
+///
+/// This is the crate's *only* CodeCommit recogniser: [`from_input`] dispatches
+/// on it and [`is_codecommit_input`] is its predicate, so one grammar decides
+/// both where a target is routed and which root resolves it. An input ghq's
+/// pattern rejects therefore cannot reach [`finalize_codecommit`], and cannot
+/// reach the `aws configure get region` fallback either; it takes the ordinary
+/// URL path, which is what ghq does with it (`newURL`, url.go:57-107, runs the
+/// pattern first and falls through to `url.Parse` when it misses).
+fn parse_codecommit(input: &str) -> Option<CodecommitRef<'_>> {
+    let rest = input.strip_prefix("codecommit:")?;
 
     // Optional `:<region>:`. The region class excludes `:`, so the region can
     // only end at the next colon, and that colon must be followed by `//`.
-    let after_region = match rest.strip_prefix(':') {
+    let (region, after_region) = match rest.strip_prefix(':') {
         Some(with_region) => {
-            let Some(end) = with_region.find(':') else {
-                return false;
-            };
-            let region = &with_region.as_bytes()[..end];
+            let end = with_region.find(':')?;
+            let region = &with_region[..end];
             // `[a-z][a-z0-9-]+`: at least two bytes.
-            if region.len() < 2 || !region[0].is_ascii_lowercase() {
-                return false;
+            let bytes = region.as_bytes();
+            if bytes.len() < 2 || !bytes[0].is_ascii_lowercase() {
+                return None;
             }
-            let tail_ok = region[1..]
+            let tail_ok = bytes[1..]
                 .iter()
                 .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
             if !tail_ok {
-                return false;
+                return None;
             }
-            &with_region[end + 1..]
+            (Some(region), &with_region[end + 1..])
         }
-        None => rest,
+        None => (None, rest),
     };
 
-    let Some(authority) = after_region.strip_prefix("//") else {
-        return false;
-    };
+    let authority = after_region.strip_prefix("//")?;
 
     // The host class excludes `@`, so the user/host separator can only be the
     // *last* `@`; ghq's user class `[^]]+` admits `@` and `/` inside the user.
-    let bytes = authority.as_bytes();
-    let (user, host) = match bytes.iter().rposition(|&b| b == b'@') {
-        Some(at) => (Some(&bytes[..at]), &bytes[at + 1..]),
-        None => (None, bytes),
+    let (user, name) = match authority.rfind('@') {
+        Some(at) => (Some(&authority[..at]), &authority[at + 1..]),
+        None => (None, authority),
     };
 
     if let Some(user) = user
-        && (user.is_empty() || user.contains(&b']'))
+        && (user.is_empty() || user.contains(']'))
     {
-        return false;
+        return None;
     }
 
     // `[\w.-]+`, ASCII: any non-ASCII byte fails here, as it does in Go.
-    !host.is_empty()
-        && host.iter().all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    if name.is_empty()
+        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    {
+        return None;
+    }
+
+    Some(CodecommitRef { region, user, name })
 }
 
-fn parse_codecommit(input: &str) -> Option<(String, Option<String>, Option<String>, String)> {
-    let rest = input.strip_prefix("codecommit:")?;
-    let (region, rest) = if let Some(after) = rest.strip_prefix(':') {
-        let end = after.find("://")?;
-        (Some(after[..end].to_owned()), &after[end + 3..])
-    } else {
-        (None, rest.strip_prefix("//")?)
-    };
-    if rest.is_empty() {
-        return None;
-    }
-    let (user, repo) = match rest.rfind('@') {
-        Some(idx) => (Some(rest[..idx].to_owned()), rest[idx + 1..].to_owned()),
-        None => (None, rest.to_owned()),
-    };
-    if repo.is_empty() {
-        return None;
-    }
-    Some(("codecommit".to_owned(), region, user, repo))
+/// Reports whether `input` is a CodeCommit-style URL under ghq's pattern
+/// (url.go:25) -- the predicate half of [`parse_codecommit`], which holds the
+/// pattern itself.
+pub(crate) fn is_codecommit_input(input: &str) -> bool {
+    parse_codecommit(input).is_some()
 }
 
 /// Builds the destination path components (host/owner/name) for a parsed
@@ -367,15 +373,12 @@ fn parse_codecommit(input: &str) -> Option<(String, Option<String>, Option<Strin
 /// (url.go:63-97) via [`resolve_codecommit_region`]; a bare `codecommit`
 /// input has no path component of its own to fall back on, so this is the
 /// only spelling that can spawn `aws` -- a region-explicit ref never does.
-fn finalize_codecommit(
-    original: &str,
-    _scheme: String,
-    region: Option<String>,
-    user: Option<String>,
-    repo_name: String,
-) -> Result<Repo, UrlError> {
+/// Only [`parse_codecommit`] reaches this, so an input outside ghq's pattern
+/// reaches neither the destination shape below nor that `aws` fallback.
+fn finalize_codecommit(original: &str, codecommit: CodecommitRef<'_>) -> Result<Repo, UrlError> {
+    let CodecommitRef { region, user, name: repo_name } = codecommit;
     let host = match region {
-        Some(r) => r,
+        Some(r) => r.to_owned(),
         None => {
             let aws_region = std::env::var("AWS_REGION").ok();
             let aws_default_region = std::env::var("AWS_DEFAULT_REGION").ok();
@@ -387,7 +390,7 @@ fn finalize_codecommit(
         }
     };
     let owner = String::new();
-    let name = repo_name;
+    let name = repo_name.to_owned();
     let https_url = match &user {
         Some(u) => format!("codecommit://{u}@{host}/{name}"),
         None => format!("codecommit://{host}/{name}"),

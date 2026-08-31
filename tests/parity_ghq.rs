@@ -80,8 +80,20 @@ fn ghq_binary() -> Option<std::path::PathBuf> {
 /// one of the two tools somewhere the other does not go. Neither `envs()`
 /// nor a fixture gitconfig can express "unset", so [`ghq_cmd`] and
 /// [`scap_cmd`] remove them from every child explicitly.
-const CLEARED: [&str; 12] = [
+const CLEARED: [&str; 16] = [
     "SCAP_CONFIG_BACKEND",
+    // Everything that lets an `aws` CLI on the developer's machine answer
+    // `aws configure get region` from a real profile. Both tools resolve a
+    // region-absent codecommit ref through that command (url.go:82-96), so on
+    // a configured host it succeeds, and a test asserting that neither tool
+    // *reached* the codecommit arm would stop being able to tell. AWS_REGION
+    // and AWS_DEFAULT_REGION are deliberately not here: the two codecommit
+    // tests set or remove those per child, because which of them is present is
+    // the thing they are comparing.
+    "AWS_CONFIG_FILE",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
     // The walker's two knobs. Neither changes what is printed, but a value
     // inherited from the developer's shell would decide which strategy and
     // how many workers the comparison ran under, which is not the test's to
@@ -972,5 +984,113 @@ fn sibling_prefix_roots_diverge_from_ghq_by_design() {
     let env = isolated_roots(home.path(), &[onetwo.as_path(), one.as_path()]);
     for flags in [vec!["list"], vec!["list", "-p"], vec!["list", "--unique"]] {
         compare_stdout(&ghq, &env, &flags, "sibling prefix roots reversed: ");
+    }
+}
+
+/// The W5.3 review's MAJOR-1, pinned against the live oracle: a spelling
+/// outside ghq's CodeCommit pattern (url.go:25) must not take scap's
+/// CodeCommit path either.
+///
+/// All three refs are ones the pre-fix `url::from_input` routed to
+/// `finalize_codecommit` and ghq routes to `url.Parse`. Both children run with
+/// `AWS_REGION` and `AWS_DEFAULT_REGION` removed, and with the profile and
+/// configuration-file variables [`CLEARED`] holds removed as well, so no
+/// `aws` on the host can answer for them either. A tool that wrongly takes
+/// that arm then announces itself: it has no region to resolve, and both tools
+/// print ghq's "You must specify a region" and exit 1. The absence of that
+/// message is the assertion that the arm was not taken; the destination
+/// comparison is the assertion that the ordinary URL path landed in the same
+/// place. Nothing here reaches the network or an AWS account.
+///
+/// `--vcs=git` is passed to both because two of the three refs fall through to
+/// ghq's `OtherRepository`, whose VCS detection would otherwise probe a
+/// non-existent host over the network. scap is git-only and takes the flag as
+/// a no-op.
+///
+/// The `codecommit://a/b` row records a **residual divergence**, not a parity
+/// match: ghq resolves it as an ordinary URL with host `a` and path `b`, while
+/// scap's URL path requires an `<owner>/<name>` pair and rejects it. That rule
+/// is not CodeCommit-specific -- `https://example.com/b` is rejected for the
+/// same reason and ghq resolves it to `<root>/example.com/b` -- and it is
+/// older than this fix. What the fix removes is the far worse pre-fix answer:
+/// a destination under a resolved AWS region with `a/b` split into two path
+/// levels, and an `aws configure get region` subprocess to produce it.
+#[test]
+fn codecommit_pattern_rejects_match_ghq() {
+    let ghq = oracle!();
+
+    /// ghq's message when no region resolves (url.go:88), which only the
+    /// CodeCommit arm can print.
+    const REGION_MESSAGE: &str = "You must specify a region";
+
+    // (ref, ghq's destination relative to its root, scap's; `None` = the tool
+    //  exits non-zero).
+    let cases: &[(&str, Option<&str>, Option<&str>)] = &[
+        // ghq: `net/url: invalid userinfo`, because `a]b` cannot be userinfo.
+        // scap: no repository path once `a]b@` is read as userinfo. Both
+        // reject; pre-fix scap resolved it to `<region>/c`.
+        ("codecommit://a]b@c", None, None),
+        // The region group needs a leading `::`, so this is an scp-like
+        // `<host>:<path>` for both tools, and they agree on all three path
+        // components. Pre-fix scap read `us-east-1:x` as a region and made it
+        // one path component of the destination.
+        (
+            "codecommit:us-east-1:x://host",
+            Some("codecommit/us-east-1:x:/host"),
+            Some("codecommit/us-east-1:x:/host"),
+        ),
+        // The residual divergence documented above.
+        ("codecommit://a/b", Some("a/b"), None),
+    ];
+
+    for &(input, want_ghq, want_scap) in cases {
+        let ghq_home = TempDir::new().unwrap();
+        let ghq_root = TempDir::new().unwrap();
+        let ghq_env = isolated(ghq_home.path(), ghq_root.path());
+        let ghq_out = ghq_cmd(&ghq, &ghq_env)
+            .args(["create", "--vcs=git", input])
+            .env_remove("AWS_REGION")
+            .env_remove("AWS_DEFAULT_REGION")
+            .output()
+            .unwrap();
+
+        let scap_home = TempDir::new().unwrap();
+        let scap_root = TempDir::new().unwrap();
+        let scap_env = isolated(scap_home.path(), scap_root.path());
+        let scap_out = scap_cmd(&scap_env)
+            .args(["create", "--vcs=git", input])
+            .env_remove("AWS_REGION")
+            .env_remove("AWS_DEFAULT_REGION")
+            .output()
+            .unwrap();
+
+        for (tool, out) in [("ghq", &ghq_out), ("scap", &scap_out)] {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                !stderr.contains(REGION_MESSAGE),
+                "{tool} took the CodeCommit path for {input:?}, which ghq's pattern rejects: \
+                 {stderr}"
+            );
+        }
+
+        for (tool, out, want, root) in [
+            ("ghq", &ghq_out, want_ghq, ghq_root.path()),
+            ("scap", &scap_out, want_scap, scap_root.path()),
+        ] {
+            match want {
+                Some(rel) => {
+                    assert!(out.status.success(), "{tool} create {input:?} failed: {out:?}");
+                    let dest = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+                    let got = std::path::Path::new(&dest).strip_prefix(root).unwrap_or_else(|_| {
+                        panic!("{tool} dest {dest:?} not under its root for {input:?}")
+                    });
+                    assert_eq!(got, std::path::Path::new(rel), "{tool} destination for {input:?}");
+                }
+                None => assert!(
+                    !out.status.success(),
+                    "{tool} accepted {input:?}, which it is expected to reject: {out:?}"
+                ),
+            }
+        }
     }
 }

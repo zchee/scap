@@ -692,6 +692,25 @@ fn is_codecommit_input_matches_ghq_acceptance_set() {
     }
 }
 
+/// Whether `from_input` routed `input` down the codecommit arm, decided from
+/// the outside: `finalize_codecommit` is the only producer of a
+/// `codecommit://` normalised URL and the only producer of
+/// [`UrlError::MissingCodecommitRegion`], so between them the two answers
+/// cover every way that arm can end. Every other input takes the ordinary URL
+/// path, which renders `https://` or fails with some other error.
+///
+/// This is what makes the property below a test of the *dispatch* rather than
+/// of the predicate that decides it -- the gap MAJOR-1 found, where
+/// `from_input` recognised a superset of ghq's pattern because it consulted a
+/// second grammar of its own.
+fn from_input_took_codecommit_path(input: &str) -> bool {
+    match from_input(input, None, false) {
+        Ok(repo) => repo.https_url.starts_with("codecommit://"),
+        Err(UrlError::MissingCodecommitRegion) => true,
+        Err(_) => false,
+    }
+}
+
 #[test]
 fn is_codecommit_input_agrees_with_ghqs_pattern() {
     let re = regex::Regex::new(GHQ_CODECOMMIT_PATTERN).expect("ghq pattern compiles");
@@ -707,7 +726,9 @@ fn is_codecommit_input_agrees_with_ghqs_pattern() {
     let suffixes = ["", "/", "]", "@x"];
 
     let mut checked = 0usize;
+    let mut dispatched = 0usize;
     let mut disagreements = Vec::new();
+    let mut dispatch_disagreements = Vec::new();
     for prefix in prefixes {
         for separator in separators {
             for user in users {
@@ -715,10 +736,39 @@ fn is_codecommit_input_agrees_with_ghqs_pattern() {
                     for suffix in suffixes {
                         let input = format!("{prefix}{separator}{user}{host}{suffix}");
                         checked += 1;
+                        // Ends the borrow of `input` before it is moved below.
+                        let (want, region_explicit) = match re.captures(&input) {
+                            Some(caps) => (true, caps.get(2).is_some()),
+                            None => (false, false),
+                        };
+
                         let got = is_codecommit_input(&input);
-                        let want = re.is_match(&input);
                         if got != want {
-                            disagreements.push((input, got, want));
+                            disagreements.push((input.clone(), got, want));
+                        }
+
+                        // The dispatch leg: `from_input` must take the
+                        // codecommit arm on exactly the strings ghq's pattern
+                        // matches. It is skipped for an accepted ref that
+                        // carries no `::<region>:` -- and only for those --
+                        // because that arm resolves its region from this
+                        // process's own AWS_REGION/AWS_DEFAULT_REGION and can
+                        // spawn `aws configure get region`
+                        // (`resolve_codecommit_region`), which a unit test can
+                        // neither control nor should run. Every *rejected*
+                        // string is checked, and that is the direction this
+                        // test exists for: a ref outside ghq's pattern must
+                        // never reach `finalize_codecommit`, so it can never
+                        // spawn `aws` either. The positive direction those
+                        // skipped strings would cover is covered instead by
+                        // `tests/parity_ghq.rs::codecommit_region_resolution_matches_ghq`,
+                        // which drives both legs of the chain through a child
+                        // process whose environment it owns.
+                        if !want || region_explicit {
+                            dispatched += 1;
+                            if from_input_took_codecommit_path(&input) != want {
+                                dispatch_disagreements.push((input, want));
+                            }
                         }
                     }
                 }
@@ -727,6 +777,7 @@ fn is_codecommit_input_agrees_with_ghqs_pattern() {
     }
 
     assert!(checked >= 200, "corpus too small: {checked} strings");
+    assert!(dispatched >= 200, "dispatch corpus too small: {dispatched} of {checked} strings");
     if let Some((input, got, want)) = disagreements.first() {
         panic!(
             "{} of {checked} strings disagree with ghq's pattern; first: \
@@ -734,4 +785,74 @@ fn is_codecommit_input_agrees_with_ghqs_pattern() {
             disagreements.len()
         );
     }
+    if let Some((input, want)) = dispatch_disagreements.first() {
+        panic!(
+            "{} of {dispatched} strings take the wrong `from_input` path; first: \
+             {input:?} -> codecommit path {}, regex {want}",
+            dispatch_disagreements.len(),
+            !want
+        );
+    }
+}
+
+/// The three inputs of the W5.3 review's MAJOR-1, each one outside ghq's
+/// pattern (url.go:25) and each one accepted by the pre-fix dispatch.
+///
+/// `ghq` says what the real ghq 1.8.0 binary does with the input: the
+/// destination it prints under `ghq create --vcs=git <input>` with an empty
+/// `GHQ_ROOT` and both `AWS_REGION` and `AWS_DEFAULT_REGION` unset, or `None`
+/// when it exits non-zero. `scap` says what this crate does with it now. The
+/// live comparison is `tests/parity_ghq.rs::codecommit_pattern_rejects_match_ghq`;
+/// the expectations here are that run, recorded.
+#[test]
+fn from_input_rejects_the_codecommit_spellings_ghq_rejects() {
+    // `codecommit://a]b@c` -- ghq's user class is `[^]]+`, so `a]b` cannot be
+    // a user and `a]b@c` cannot be a repository name either. ghq: rejected,
+    // `net/url: invalid userinfo`. scap: rejected on the ordinary URL path,
+    // where `a]b` is the userinfo and `c` the host, leaving no path at all.
+    // Before the fix this reached `finalize_codecommit` with repo `c` and
+    // spawned `aws configure get region` for a ref ghq never routes there.
+    let err = from_input("codecommit://a]b@c", None, false).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            UrlError::MissingHost(_) | UrlError::MissingPath(_) | UrlError::Malformed { .. }
+        ),
+        "codecommit://a]b@c must fail on the ordinary URL path, got {err:?}"
+    );
+    assert!(!is_codecommit_input("codecommit://a]b@c"));
+    assert!(!from_input_took_codecommit_path("codecommit://a]b@c"));
+
+    // `codecommit://a/b` -- ghq's repository-name class is `[\w.-]+`, which
+    // excludes `/`. ghq: accepted as an ordinary URL, host `a`, path `b`,
+    // destination `<root>/a/b`. scap: rejected, because its ordinary URL path
+    // requires an `<owner>/<name>` pair and `a/b` leaves only `b` after the
+    // host. That residual gap is not a codecommit rule at all -- it is the
+    // same rule that rejects `https://example.com/b`, which ghq resolves to
+    // `<root>/example.com/b` -- and it is unchanged by this fix. What the fix
+    // removes is the destination `<root>/<aws-region>/a/b`, an extra path
+    // level that came from `PathBuf::push` splitting a repository name of
+    // `a/b`, and the `aws` subprocess that produced the region for it.
+    let err = from_input("codecommit://a/b", None, false).unwrap_err();
+    assert!(
+        matches!(err, UrlError::Malformed { .. }),
+        "codecommit://a/b must fail the owner/repo rule, got {err:?}"
+    );
+    assert!(!from_input_took_codecommit_path("codecommit://a/b"));
+
+    // `codecommit:us-east-1:x://host` -- the region group needs a leading
+    // `::`, so this is not a codecommit ref for either tool. Both read it as
+    // an scp-like `<host>:<path>`, and both resolve it to the same three path
+    // components. The pre-fix parser instead ended the region at the first
+    // `://`, took `us-east-1:x` as a region, and made it the host component of
+    // a destination -- a two-level path element in a place that holds one.
+    let repo = from_input("codecommit:us-east-1:x://host", None, false)
+        .expect("an scp-like input, not a codecommit ref");
+    assert!(!from_input_took_codecommit_path("codecommit:us-east-1:x://host"));
+    assert_eq!(repo.host, "codecommit");
+    assert_eq!(
+        crate::path::rel_path(&repo, false),
+        std::path::PathBuf::from("codecommit/us-east-1:x:/host"),
+        "destination must match ghq's for the same input",
+    );
 }
