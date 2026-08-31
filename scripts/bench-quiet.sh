@@ -9,6 +9,12 @@
 # "Loaded" is measured as CPU contention rather than as the 1-minute load
 # average - see deviation D-1 at check_preconditions below, and the
 # "Deviations" section of docs/benchmarks/2026-08-28-baseline.md.
+#
+# The machine is gated at BOTH ends of a group: check_preconditions before the
+# first row, and the closing gate after the last one - see "Closing gate"
+# below. Exit codes: 1 a usage or environment error, 3 a gate refusal (the
+# group did not measure), 4 a closing-gate discard (the group measured, and
+# its rows must not be reported).
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -602,14 +608,71 @@ for row in "${SELECTED_ROWS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# metadata.json + summary.md
+# Closing gate (plan §6 W5.1 item (b); ledger #21e HANDOFF)
 # ---------------------------------------------------------------------------
+#
+# The start gate alone admits a group that BEGINS quiet and ENDS contended,
+# whose later rows were therefore measured against a competitor. Until now the
+# harness only RECORDED the closing sample and the Phase-3 re-gate lane
+# enforced it in an operator wrapper (.omc/bench/p3-regate/group.sh), which is
+# what discarded 11 of that lane's groups; the Phase-4b gate discarded two
+# more. A rule that decides which rows may be published belongs in the harness
+# rather than in each lane's private wrapper, so the check runs here.
+#
+# Same two clauses, same constants and the same median of three samples as the
+# start gate: a close held to a weaker bar than the start would admit exactly
+# the drift it exists to catch. xprotectd, cargo and rustc are start-only
+# clauses and stay that way - the closing rule is the one the re-gate and
+# Phase-4b lanes actually applied (ledger #21e HANDOFF names cpu_idle_pct.end
+# and top_proc_cpu_pct.end), and widening it here would silently reinterpret
+# the discards already on the record.
+#
+# There is deliberately no --no-closing-gate: a lane able to switch the check
+# off after seeing its numbers is choosing its own windows again.
+# SCAP_BENCH_FORCE=1 is not that switch - it declares the machine
+# deliberately loaded, so the close is recorded and NOT gated, exactly as the
+# start is. Under FORCE the closing sample stays a single `top` reading, which
+# is what the forced start takes.
+#
+# A failing group is DISCARDED, never deleted: metadata.json (with
+# closing_gate.passed = false and the failing clauses), summary.md and every
+# row JSON are written first, then a DISCARDED marker, then exit 4. The
+# numbers survive so the discard can be disclosed in the record instead of
+# reading as a window quietly dropped.
 
 LOADAVG_END="$(sysctl -n vm.loadavg)"
 XPROTECTD_CPU_END="$(xprotectd_cpu_pct)"
-sample_cpu
+
+CLOSING_FAILURES=()
+if [[ "$FORCE" != "1" ]]; then
+  CLOSING_CHECKED=1
+  sample_cpu_median3
+else
+  CLOSING_CHECKED=0
+  sample_cpu
+fi
 IDLE_END="$SAMPLE_IDLE"
 TOP_PROC_END="$SAMPLE_TOP"
+
+if (( CLOSING_CHECKED )); then
+  if ! awk -v v="$IDLE_END" 'BEGIN { exit !(v >= '"$IDLE_MIN"') }'; then
+    CLOSING_FAILURES+=("CPU idle ${IDLE_END}% < ${IDLE_MIN}% (median of 3 samples, top -l 2)")
+  fi
+  if ! awk -v v="$TOP_PROC_END" 'BEGIN { exit !(v <= '"$TOP_PROC_MAX"') }'; then
+    CLOSING_FAILURES+=("busiest process at ${TOP_PROC_END}% CPU > ${TOP_PROC_MAX}% (median of 3 samples, top -o cpu)")
+  fi
+fi
+
+if (( ${#CLOSING_FAILURES[@]} > 0 )); then
+  CLOSING_FAILURES_JSON="$(printf '%s\n' "${CLOSING_FAILURES[@]}" \
+    | "$JQ_BIN" -R -s 'split("\n") | map(select(length > 0))')"
+else
+  CLOSING_FAILURES_JSON='[]'
+fi
+
+# ---------------------------------------------------------------------------
+# metadata.json + summary.md
+# ---------------------------------------------------------------------------
 
 # shellcheck disable=SC2016 # single-quoted jq program; $vars are jq bindings
 "$JQ_BIN" -n \
@@ -641,6 +704,8 @@ TOP_PROC_END="$SAMPLE_TOP"
   --arg forced "$FORCE" \
   --arg foreign_scans "$FOREIGN_SCANS" \
   --arg out_real "$OUT_REAL" \
+  --arg closing_checked "$CLOSING_CHECKED" \
+  --argjson closing_failures "$CLOSING_FAILURES_JSON" \
   --argjson corpus_inventory "$INVENTORY_JSON" \
   '{
     git_head: $git_head,
@@ -654,6 +719,17 @@ TOP_PROC_END="$SAMPLE_TOP"
       deviation: "D-1: contention measured directly; load average recorded, not gated",
       idle_min_pct: ($idle_min | tonumber),
       top_proc_max_pct: ($top_proc_max | tonumber)
+    },
+    closing_gate: {
+      checked: ($closing_checked == "1"),
+      passed: (if $closing_checked == "1" then ($closing_failures | length) == 0 else null end),
+      idle_pct: ($idle_end | tonumber),
+      top_proc_cpu_pct: ($top_proc_end | tonumber),
+      idle_min_pct: ($idle_min | tonumber),
+      top_proc_max_pct: ($top_proc_max | tonumber),
+      sampling: (if $closing_checked == "1" then "median of 3 top -l 2 samples 5 s apart, D-1a exclusions" else "single top -l 2 sample (forced run: recorded, not gated)" end),
+      failures: $closing_failures,
+      rule: "the closing sample is held to the same idle/busiest-process constants as the start gate; a failing group is DISCARDED - its rows, metadata and summary are kept and a DISCARDED marker is written, and the run exits 4 - so a discarded window is disclosed rather than dropped. SCAP_BENCH_FORCE=1 records the close without gating it, as it does the start."
     },
     os: { name: $os_name, version: $os_version, build: $os_build },
     cpu_brand: $cpu_brand,
@@ -714,3 +790,21 @@ TOP_PROC_END="$SAMPLE_TOP"
 } > "$OUT/summary.md"
 
 echo "bench-quiet.sh: wrote $OUT/metadata.json and $OUT/summary.md (${#RAN_ROWS[@]} rows)" >&2
+
+if (( ${#CLOSING_FAILURES[@]} > 0 )); then
+  {
+    echo "bench-quiet.sh: closing gate failed - this group is DISCARDED:"
+    printf '  - %s\n' "${CLOSING_FAILURES[@]}"
+    echo "The group started quiet and ended contended, so its later rows were"
+    echo "measured against a competitor. The run directory is kept: report the"
+    echo "discard, do not report the rows."
+  } >&2
+  # Marker file, so a reader who finds this directory later cannot mistake it
+  # for an admitted group even without reading metadata.json.
+  {
+    printf 'Discarded %s: closing gate failed.\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '%s\n' "${CLOSING_FAILURES[@]}"
+    printf 'Rows kept as evidence; they must not be reported as a measurement.\n'
+  } >> "$OUT/DISCARDED"
+  exit 4
+fi
