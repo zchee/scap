@@ -24,6 +24,26 @@ set -uo pipefail
 #
 # Every case is cleaned up (permissions restored, then removed) before the
 # script exits, including on a failed/aborted run.
+#
+# Agreement column, and what the frozen record means. Until W5.4 the
+# Agreement verdict compared stdout only, so a case where the two tools
+# printed the same thing but exited differently was recorded as `Y`. The
+# frozen W0.4 record (docs/benchmarks/2026-08-28-oracle-probe.md) was
+# produced under that rule and is deliberately NOT re-run, so read two of its
+# rows with that in mind:
+#
+#   - Row 13b (ENOTDIR root) is a genuine stdout-only `Y`: ghq exits 2 after
+#     a nil-pointer panic and scap exits 0, and both print nothing. Under the
+#     rule below it would read `N (stdout only: ghq exit 2, scap exit 0)`.
+#     The row's own note already says this case is asserted directly rather
+#     than against the oracle, so the record's conclusion is unaffected.
+#   - Row 4 (ELOOP symlink loop) is the other row whose `Y` rested on the
+#     stdout-only rule, and it is the one where a `timeout` kill of a hung
+#     walk would have been indistinguishable from agreement. The record shows
+#     exit 0 for both tools, so that row was in fact a true agreement; it
+#     would still read `Y` under the rule below.
+#
+# No other row in the frozen record has divergent exit statuses.
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 outfile=${1:-"$repo_root/docs/benchmarks/2026-08-28-oracle-probe.md"}
@@ -123,8 +143,18 @@ run_case() {
   scap_status=$?
   scap_err=$(<"$workroot/scap.err")
 
+  # Agreement is over the pair (stdout, exit status), not stdout alone: two
+  # tools that both print nothing while one of them crashes have not agreed
+  # about anything. A `timeout` kill (124, or 137 after a --kill-after) is
+  # never agreement either, however similar the two empty stdouts look.
   agree=N
-  [[ "$ghq_out" == "$scap_out" ]] && agree=Y
+  if [[ $ghq_status -eq 124 || $ghq_status -eq 137 || $scap_status -eq 124 || $scap_status -eq 137 ]]; then
+    agree="N (timeout kill: ghq exit $ghq_status, scap exit $scap_status)"
+  elif [[ "$ghq_out" == "$scap_out" && "$ghq_status" -eq "$scap_status" ]]; then
+    agree=Y
+  elif [[ "$ghq_out" == "$scap_out" ]]; then
+    agree="N (stdout only: ghq exit $ghq_status, scap exit $scap_status)"
+  fi
 
   rows+=("| $id | $(md_escape "$desc") | $(truncate_for_table "$ghq_out") | $(truncate_for_table "$ghq_err") (exit $ghq_status) | $(truncate_for_table "$scap_out") | $(truncate_for_table "$scap_err") (exit $scap_status) | $rule | $agree |")
 }
