@@ -217,6 +217,25 @@ xprotectd_cpu_pct() {
 # core while the idle figure stays high.
 TOP_PROC_EXCLUDE="${SCAP_BENCH_TOP_PROC_EXCLUDE:-top ps kernel_task WindowServer}"
 
+# True iff $1 is a plain non-negative decimal, i.e. something `top` could
+# actually have reported as a CPU percentage.
+#
+# The gate clauses compare with `awk 'BEGIN { exit !(v <= MAX) }'`. When the
+# sample is not numeric, awk does not read it as 0: it falls back to a STRING
+# comparison against the bound, so whether the machine is admitted depends on
+# the sample's leading bytes rather than on anything about the machine.
+# Measured against the 15 % busiest-process bound: `''`, `(bar)` and `-bash`
+# are ADMITTED, `Google` and `kernel_task` are refused. That is worse than a
+# fixed default would be, because it is not even consistently wrong.
+#
+# Two shapes of parse failure are reachable from one `top` output change --
+# an empty capture when the `%CPU` header moves, and a command name when the
+# `cpu,command` columns swap -- and the first admits every machine. Hence a
+# validation rather than a non-empty test.
+is_cpu_pct() {
+  [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]
+}
+
 sample_cpu() {
   local out table
   out="$(top -l 2 -n 8 -o cpu -stats cpu,command 2>/dev/null)"
@@ -229,8 +248,23 @@ sample_cpu() {
         BEGIN { n = split(excl, a, " "); for (i = 1; i <= n; i++) skip[a[i]] = 1 }
         NF >= 2 && !($2 in skip) { print $1 }' \
     | sort -g | tail -1)"
+  # A `top` sample that could not be parsed is a failed measurement, not
+  # evidence of a quiet machine. Neither figure is allowed to reach its
+  # clause unvalidated (see is_cpu_pct above), but they are handled
+  # differently because their clauses point in opposite directions:
+  #
+  #   - SAMPLE_IDLE is gated as `>= IDLE_MIN`, so 0 fails it. Defaulting an
+  #     unparsable value to 0 is therefore fail-closed and is what happens.
+  #     The `:-0` alone was NOT enough: it only catches the empty string,
+  #     while the sed class `[0-9.]*` also admits `99.5.1`, and a
+  #     non-numeric sample is string-compared rather than read as 0 --
+  #     `99.5.1`, `9.9.9` and even `abc` all satisfy `>= 85.0` that way.
+  #   - SAMPLE_TOP is gated as `<= TOP_PROC_MAX`, where 0 would PASS, so
+  #     there is no safe default. It is left EMPTY instead, and both gate
+  #     sites below refuse it explicitly before any comparison runs.
   SAMPLE_IDLE="${SAMPLE_IDLE:-0}"
-  SAMPLE_TOP="${SAMPLE_TOP:-0}"
+  is_cpu_pct "$SAMPLE_IDLE" || SAMPLE_IDLE=0
+  SAMPLE_TOP="${SAMPLE_TOP:-}"
 }
 
 # Median of three samples taken 5 s apart, so one transient spike neither
@@ -244,7 +278,18 @@ sample_cpu_median3() {
     (( i < 3 )) && sleep 5
   done
   SAMPLE_IDLE="$(printf '%s\n' "${idles[@]}" | sort -g | sed -n '2p')"
+  # An unparsed sample poisons the median rather than being sorted around it:
+  # `sort -g` puts the empty string first, so with one bad sample out of three
+  # the median would silently be a good one and the failed measurement would
+  # vanish. Refuse the whole median instead.
   SAMPLE_TOP="$(printf '%s\n' "${tops[@]}" | sort -g | sed -n '2p')"
+  local t
+  for t in "${tops[@]}"; do
+    if ! is_cpu_pct "$t"; then
+      SAMPLE_TOP=""
+      break
+    fi
+  done
 }
 
 # --- Deviation D-1 (approved 2026-08-28) -----------------------------------
@@ -281,7 +326,9 @@ check_preconditions() {
     failures+=("CPU idle ${IDLE_START}% < ${IDLE_MIN}% (median of 3 samples, top -l 2)")
   fi
 
-  if ! awk -v v="$TOP_PROC_START" 'BEGIN { exit !(v <= '"$TOP_PROC_MAX"') }'; then
+  if ! is_cpu_pct "$TOP_PROC_START"; then
+    failures+=("busiest-process CPU is not a number (got '${TOP_PROC_START}') from \`top -l 2 -o cpu -stats cpu,command\`; refusing to read an unparsable sample as 0%")
+  elif ! awk -v v="$TOP_PROC_START" 'BEGIN { exit !(v <= '"$TOP_PROC_MAX"') }'; then
     failures+=("busiest process at ${TOP_PROC_START}% CPU > ${TOP_PROC_MAX}% (median of 3 samples, top -o cpu)")
   fi
 
@@ -658,7 +705,9 @@ if (( CLOSING_CHECKED )); then
   if ! awk -v v="$IDLE_END" 'BEGIN { exit !(v >= '"$IDLE_MIN"') }'; then
     CLOSING_FAILURES+=("CPU idle ${IDLE_END}% < ${IDLE_MIN}% (median of 3 samples, top -l 2)")
   fi
-  if ! awk -v v="$TOP_PROC_END" 'BEGIN { exit !(v <= '"$TOP_PROC_MAX"') }'; then
+  if ! is_cpu_pct "$TOP_PROC_END"; then
+    CLOSING_FAILURES+=("busiest-process CPU is not a number (got '${TOP_PROC_END}') from \`top -l 2 -o cpu -stats cpu,command\`; refusing to read an unparsable sample as 0%")
+  elif ! awk -v v="$TOP_PROC_END" 'BEGIN { exit !(v <= '"$TOP_PROC_MAX"') }'; then
     CLOSING_FAILURES+=("busiest process at ${TOP_PROC_END}% CPU > ${TOP_PROC_MAX}% (median of 3 samples, top -o cpu)")
   fi
 fi
@@ -674,6 +723,23 @@ fi
 # metadata.json + summary.md
 # ---------------------------------------------------------------------------
 
+# top_proc_cpu_pct.start/.end are `-1` when the busiest-process figure could
+# not be parsed out of `top`. The field is numeric (jq `tonumber`), so the
+# unparsed case needs a value rather than an empty or non-numeric string, and
+# -1 is outside the range of any real CPU percentage.
+#
+# What a -1 means differs by end, because the two gates fail differently:
+#
+#   - `.start` = -1 means SCAP_BENCH_FORCE=1. A non-forced start-gate refusal
+#     exits 3 before any metadata is written, so no record can carry it.
+#   - `.end` = -1 means EITHER a forced run OR a non-forced group the closing
+#     gate discarded, because that gate deliberately writes metadata.json and
+#     every row JSON BEFORE exiting 4, so a discard is disclosed rather than
+#     vanishing. `closing_gate.passed` tells the two apart: false for the
+#     discard, null for the forced run whose close is recorded but not gated.
+is_cpu_pct "${TOP_PROC_START:-}" || TOP_PROC_START=-1
+is_cpu_pct "${TOP_PROC_END:-}" || TOP_PROC_END=-1
+
 # shellcheck disable=SC2016 # single-quoted jq program; $vars are jq bindings
 "$JQ_BIN" -n \
   --arg git_head "$("$GIT_BIN" -C "$REPO_ROOT" rev-parse HEAD)" \
@@ -685,8 +751,8 @@ fi
   --arg xprotectd_cpu_end "$XPROTECTD_CPU_END" \
   --arg idle_start "${IDLE_START:-0}" \
   --arg idle_end "${IDLE_END:-0}" \
-  --arg top_proc_start "${TOP_PROC_START:-0}" \
-  --arg top_proc_end "${TOP_PROC_END:-0}" \
+  --arg top_proc_start "$TOP_PROC_START" \
+  --arg top_proc_end "$TOP_PROC_END" \
   --arg idle_min "$IDLE_MIN" \
   --arg top_proc_max "$TOP_PROC_MAX" \
   --arg os_name "$(sw_vers -productName)" \

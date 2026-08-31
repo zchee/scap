@@ -11,6 +11,12 @@ statistics, and evaluates a thresholds file describing pass/fail criteria of
 the kind plan §9's acceptance criteria use: an absolute margin over a
 reference, a ratio against a reference, non-overlapping IQR boxes, or a
 bootstrap confidence interval on the median difference.
+
+The two separation criteria ("iqr", "bootstrap") require an explicit
+"direction" field, because separation on its own is symmetric and a criterion
+that reads "no slower than" must not pass on a build that is significantly
+slower. See _DIRECTIONS. An empty thresholds file, or one missing a
+--require'd criterion, exits 2 rather than reporting a vacuous pass.
 """
 
 from __future__ import annotations
@@ -95,6 +101,58 @@ def load_hyperfine_json(path: Path) -> BenchStats:
 def iqr_disjoint(a: BenchStats, b: BenchStats) -> bool:
     """Return True iff a's and b's [q1, q3] boxes do not overlap."""
     return a.q3_ms < b.q1_ms or b.q3_ms < a.q1_ms
+
+
+#: Accepted values of a criterion's "direction" field.
+#:
+#: "iqr" and "bootstrap" answer "are these two distributions separated?", which
+#: is a two-sided question, while every criterion the plan states is one-sided:
+#: a bound not to exceed, or a build that must be no slower than its
+#: predecessor. Reading a two-sided answer as a one-sided verdict is what let a
+#: significant REGRESSION report PASS -- non-overlapping boxes and a CI that
+#: excludes zero are exactly as true when lhs is the slower side.
+#:
+#: There is deliberately no default. A thresholds file written before W5.4 does
+#: not record which side it expected to win, so guessing on its behalf would
+#: silently assign a meaning to a file that never had one; such a file now
+#: fails with an explicit error instead.
+_DIRECTIONS = {
+    # lhs must be significantly FASTER (lower) than rhs.
+    "lhs_faster",
+    # rhs must be significantly faster than lhs.
+    "rhs_faster",
+    # The pre-W5.4 two-sided reading: the two only have to be separated, in
+    # either direction. Only honest for a criterion that genuinely asks
+    # "did anything change at all?".
+    "differ",
+}
+
+
+def _require_direction(spec: dict[str, object]) -> str:
+    """Read and validate a criterion's required "direction" field.
+
+    Args:
+        spec: One criterion from the thresholds file.
+
+    Returns:
+        The validated direction.
+
+    Raises:
+        ValueError: If "direction" is missing or not one of _DIRECTIONS.
+    """
+    direction = spec.get("direction")
+    if direction is None:
+        raise ValueError(
+            "missing required 'direction' (one of "
+            f"{', '.join(sorted(_DIRECTIONS))}); a separation test does not "
+            "say which side is allowed to be slower"
+        )
+    if direction not in _DIRECTIONS:
+        raise ValueError(
+            f"unknown direction {direction!r} (expected one of "
+            f"{', '.join(sorted(_DIRECTIONS))})"
+        )
+    return str(direction)
 
 
 def bootstrap_median_diff_ci(
@@ -226,15 +284,30 @@ def evaluate_criterion(spec: dict[str, object], base_dir: Path) -> tuple[bool, s
         )
 
     if kind == "iqr":
+        direction = _require_direction(spec)
         lhs_stats = _resolve_stats(spec["lhs"], base_dir)
         rhs_stats = _resolve_stats(spec["rhs"], base_dir)
-        ok = iqr_disjoint(lhs_stats, rhs_stats)
+        disjoint = iqr_disjoint(lhs_stats, rhs_stats)
+        lhs_below = lhs_stats.q3_ms < rhs_stats.q1_ms
+        if direction == "lhs_faster":
+            ok = lhs_below
+        elif direction == "rhs_faster":
+            ok = rhs_stats.q3_ms < lhs_stats.q1_ms
+        else:
+            ok = disjoint
+        side = (
+            "lhs below rhs"
+            if lhs_below
+            else ("rhs below lhs" if disjoint else "overlapping")
+        )
         return ok, (
             f"lhs IQR=[{lhs_stats.q1_ms:.4f}, {lhs_stats.q3_ms:.4f}] "
-            f"rhs IQR=[{rhs_stats.q1_ms:.4f}, {rhs_stats.q3_ms:.4f}] disjoint={ok}"
+            f"rhs IQR=[{rhs_stats.q1_ms:.4f}, {rhs_stats.q3_ms:.4f}] "
+            f"disjoint={disjoint} ({side}) direction={direction}"
         )
 
     if kind == "bootstrap":
+        direction = _require_direction(spec)
         lhs_stats = _resolve_stats(spec["lhs"], base_dir)
         rhs_stats = _resolve_stats(spec["rhs"], base_dir)
         n = int(_number_or(spec, "n", 10000.0))
@@ -243,20 +316,72 @@ def evaluate_criterion(spec: dict[str, object], base_dir: Path) -> tuple[bool, s
         lo, hi = bootstrap_median_diff_ci(
             rhs_stats, lhs_stats, n=n, seed=seed, confidence=confidence
         )
-        ok = not (lo <= 0.0 <= hi)
+        # The CI is on median(lhs) - median(rhs), so an interval entirely
+        # below zero means lhs is the faster side and one entirely above
+        # zero is a regression of lhs against rhs.
+        if direction == "lhs_faster":
+            ok = hi < 0.0
+        elif direction == "rhs_faster":
+            ok = lo > 0.0
+        else:
+            ok = not (lo <= 0.0 <= hi)
+        sign = (
+            "lhs faster" if hi < 0.0 else ("lhs slower" if lo > 0.0 else "inconclusive")
+        )
         return (
             ok,
-            f"{confidence:.0%} CI of median(lhs)-median(rhs) = [{lo:.4f}, {hi:.4f}] excludes 0={ok}",
+            (
+                f"{confidence:.0%} CI of median(lhs)-median(rhs) = "
+                f"[{lo:.4f}, {hi:.4f}] excludes 0={not (lo <= 0.0 <= hi)} "
+                f"({sign}) direction={direction}"
+            ),
         )
 
     raise ValueError(f"unknown criterion kind {kind!r}")
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
-    """Run the `compare` subcommand: evaluate every criterion, print PASS/FAIL."""
+    """Run the `compare` subcommand: evaluate every criterion, print PASS/FAIL.
+
+    Returns:
+        0 if every criterion passed, 1 if any failed, 2 if the thresholds file
+        itself is unusable (not an object, or empty) or a --require'd
+        criterion is absent from it.
+    """
     thresholds_path = Path(args.thresholds)
-    thresholds: dict[str, dict[str, object]] = json.loads(thresholds_path.read_text())
+    thresholds: object = json.loads(thresholds_path.read_text())
     base_dir = Path(args.base_dir) if args.base_dir else thresholds_path.parent
+
+    # A thresholds file with no criteria used to exit 0: the loop below ran
+    # zero times and `all_ok` stayed True, so "every criterion passed" was
+    # reported for a gate that checked nothing. Emptying or truncating the
+    # file was therefore the cheapest way to make a benchmark gate green.
+    if not isinstance(thresholds, dict):
+        print(
+            f"{thresholds_path}: thresholds file must be a JSON object of "
+            f"criteria, got {type(thresholds).__name__}",
+            file=sys.stderr,
+        )
+        return 2
+    if not thresholds:
+        print(
+            f"{thresholds_path}: thresholds file holds no criteria; refusing "
+            "to report a pass for a gate that checked nothing",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Renaming or deleting a criterion is the same hole one level down: the
+    # gate stays green because the criterion it was supposed to enforce is
+    # simply no longer named. --require lets the caller pin the names it
+    # expects to see evaluated.
+    missing = [name for name in (args.require or []) if name not in thresholds]
+    if missing:
+        print(
+            f"{thresholds_path}: required criteria absent: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return 2
 
     all_ok = True
     for name, spec in thresholds.items():
@@ -286,6 +411,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-dir",
         default=None,
         help="Base directory for relative 'file' references (default: thresholds file's directory).",
+    )
+    compare_parser.add_argument(
+        "--require",
+        action="append",
+        metavar="NAME",
+        help=(
+            "Criterion name that must be present in the thresholds file; "
+            "repeatable. Exits 2 if any is absent, so renaming or dropping a "
+            "criterion cannot quietly shrink the gate."
+        ),
     )
     compare_parser.set_defaults(func=cmd_compare)
 
